@@ -1,0 +1,8 @@
+# The URL to your database.
+DATABASE_URL = "postgresql://postgres:mycoolpassword@host/workingtitle"
+
+# The config for your SMTP server.
+SMTP_SERVER = "smtp.some.place"
+SMTP_PORT = 465
+SMTP_USER = "my@cool.email"
+SMTP_PASSWORD = "mycoolpassword"

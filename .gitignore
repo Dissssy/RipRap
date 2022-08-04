@@ -1,0 +1,9 @@
+.vscode/
+venv/
+__pycache__/
+
+config.py
+
+# pls ignore
+trash/
+scripts/
