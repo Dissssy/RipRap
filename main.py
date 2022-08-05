@@ -17,7 +17,7 @@ import config
 from common.primitive import Primitive
 from common.db import _create_db_connection
 
-import bp.auth, bp.server
+import bp.auth, bp.server, bp.channel
 
 app = Quart(__name__)
 QuartSchema(app)
@@ -35,7 +35,7 @@ app.config.update(
 
 
 def register_blueprints(app: Quart):
-    blueprints = [bp.auth.bp, bp.server.bp]
+    blueprints = [bp.auth.bp, bp.server.bp, bp.channel.bp]
     for blueprint in blueprints:
         app.register_blueprint(blueprint, url_prefix=f"/api/{blueprint.name}")
 

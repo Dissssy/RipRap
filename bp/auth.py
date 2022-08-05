@@ -33,7 +33,7 @@ class Registration:
 
 
 @bp.put("/register")
-@tag(["V1", "Authorization"])
+@tag(["Authorization", "Creation"])
 @validate_request(Registration.Data)
 @validate_response(Registration.Success, 201)
 @validate_response(Registration.Failure, 409)
@@ -50,7 +50,7 @@ async def auth_register(data: Registration.Data):
         snowflake = await app.db.fetch_val(
             f"""INSERT INTO users (snowflake, username, passwordhash) VALUES (:snowflake, :username, :passwordhash) RETURNING snowflake""",
             values={
-                "snowflake": f"{next(app.snowflake_gen)}",
+                "snowflake": next(app.snowflake_gen),
                 "username": f"{data.username}",
                 "passwordhash": zlib.compress(
                     bcrypt.hashpw(
@@ -59,7 +59,8 @@ async def auth_register(data: Registration.Data):
                 ),
             },
         )
-    except:
+    except Exception as e:
+        print(e)
         return Registration.Failure(f"""User already exists"""), 409
     return Registration.Success(str(snowflake)), 201
 
@@ -79,7 +80,7 @@ class Login:
 
 
 @bp.post("/login")
-@tag(["V1", "Authorization"])
+@tag(["Authorization"])
 @validate_request(Login.Data)
 @validate_response(Login.Success, 201)
 @validate_response(Login.Failure, 401)
@@ -129,7 +130,7 @@ class Logout:
 
 
 @bp.delete("/logout")
-@tag(["V1", "Authorization"])
+@tag(["Authorization"])
 @validate_response(Logout.Success, 201)
 @validate_response(Logout.Failure, 401)
 @validate_headers(Logout.Headers)
@@ -151,7 +152,7 @@ class Sessions:
 
 
 @bp.get("/sessions")
-@tag(["V1", "Info"])
+@tag(["Info"])
 @validate_headers(Sessions.Headers)
 @validate_response(Sessions.SessionsList, 200)
 @validate_response(Sessions.Failure, 401)
@@ -177,7 +178,7 @@ class DeleteAccount:
 
 
 @bp.delete("/remove_account_yes_im_serous_wa_wa_we_wa")
-@tag(["V1", "Authorization"])
+@tag(["Authorization"])
 @validate_headers(DeleteAccount.Headers)
 @validate_request(DeleteAccount.Data)
 @validate_response(DeleteAccount.Unauthorized, 401)
