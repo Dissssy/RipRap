@@ -11,14 +11,13 @@ from quart_schema import (
 from snowflake import SnowflakeGenerator
 import json
 import uuid
-from time import time
 
 import config
 
 from common.primitive import Primitive
 from common.db import _create_db_connection
 
-import bp.auth
+import bp.auth, bp.server
 
 app = Quart(__name__)
 QuartSchema(app)
@@ -36,9 +35,9 @@ app.config.update(
 
 
 def register_blueprints(app: Quart):
-    blueprints = [bp.auth.bp]
+    blueprints = [bp.auth.bp, bp.server.bp]
     for blueprint in blueprints:
-        app.register_blueprint(blueprint, url_prefix="/api")
+        app.register_blueprint(blueprint, url_prefix=f"/api/{blueprint.name}")
 
 
 register_blueprints(app)
@@ -52,16 +51,10 @@ def decode_json(nibble: bytes):
     return json.loads(zlib.decompress(nibble).decode("utf-8"))
 
 
-@app.route("/")
-async def index():
-    count_users = await app.db.fetch_val("SELECT COUNT(*) FROM users")
-    return f"There are {count_users} users registered!"
-
-
-class MakeServer:
-    Headers = Primitive.TokenHeader
-    Success = Primitive.GenericStr
-    Failure = Primitive.Error
+# @app.route("/")
+# async def index():
+#     count_users = await app.db.fetch_val("SELECT COUNT(*) FROM users")
+#     return f"There are {count_users} users registered!"
 
 
 @app.before_serving
