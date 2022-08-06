@@ -1,4 +1,4 @@
-# DisClone
+# RipRap
 
 A chat app written in Python 3.
 
