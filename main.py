@@ -1,5 +1,7 @@
 import sys
 
+from quart_cors import cors
+
 sys.path.append(".")
 
 import asyncio
@@ -32,6 +34,7 @@ app.config.update(
         },
     }
 )
+app = cors(app, allow_origin="*")
 
 
 def register_blueprints(app: Quart):
