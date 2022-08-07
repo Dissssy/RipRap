@@ -1,6 +1,5 @@
 import codecs
-from dataclasses import asdict, dataclass
-from typing import Optional, TypedDict
+from typing import cast
 import zlib
 import bcrypt
 from quart import Blueprint
@@ -21,60 +20,29 @@ from common.db import (
     _get_channel_messages,
     _get_channel_users,
     _get_snowflake_from_token,
-    _get_user_channels,
     _get_user_tokens,
     _grant_channel_access,
     _has_access_to_channel,
     _is_owner,
 )
 
-from common.primitive import Primitive
+import common.primitive as Primitive
 from common.utils import validate_snowflake, validate_string
 
 bp = Blueprint("channel", __name__)
 
 
-# class Channels:
-#     Headers = Primitive.TokenHeader
-#     Channels = Primitive.GenericList
-#     Unauthorized = Primitive.Error
-
-
-# @bp.get("/list")
-# @tag(["Channels", "Info"])
-# @validate_headers(Channels.Headers)
-# @validate_response(Channels.Channels, 200)
-# @validate_response(Channels.Unauthorized, 401)
-# async def channel_userlist(headers: Channels.Headers):
-#     snowflake = await _get_snowflake_from_token(app.db, headers.x_token)
-#     if snowflake is not None:
-#         return Channels.Channels(await _get_user_channels(app.db, snowflake)), 200
-#     else:
-#         return Channels.Unauthorized("Token is invalid"), 401
-
-
-class MakeChannel:
-    Headers = Primitive.TokenHeader
-
-    @dataclass
-    class Data:
-        name: str
-        picture_url: Optional[str]
-
-    Success = Primitive.Snowflake
-    InputError = Primitive.Error
-    Unauthorized = Primitive.Error
-
-
 @bp.put("/<server_snowflake>/create")
 @tag(["Channels", "Servers", "Creation"])
-@validate_headers(MakeChannel.Headers)
-@validate_request(MakeChannel.Data)
-@validate_response(MakeChannel.Success, 200)
-@validate_response(MakeChannel.InputError, 400)
-@validate_response(MakeChannel.Unauthorized, 401)
+@validate_headers(Primitive.Header.Token)
+@validate_request(Primitive.Create.Channel)
+@validate_response(Primitive.Channel, 200)
+@validate_response(Primitive.Error.InvalidInput, 400)
+@validate_response(Primitive.Error.Unauthorized, 401)
 async def channel_make(
-    server_snowflake: str, data: MakeChannel.Data, headers: MakeChannel.Headers
+    server_snowflake: str,
+    data: Primitive.Create.Channel,
+    headers: Primitive.Header.Token,
 ):
     snowflake = await _get_snowflake_from_token(app.db, headers.x_token)
     if snowflake is not None:
@@ -85,55 +53,43 @@ async def channel_make(
                 url = data.picture_url
             r = validate_string(url, minlength=0, maxlength=100)
             if r is not None:
-                return MakeChannel.InputError(r)
+                return Primitive.Error.InvalidInput(r), 400
             r = validate_string(data.name, minlength=1, maxlength=100)
             if r is not None:
-                return MakeChannel.InputError(r)
-            channel_snowflake = await app.db.execute(
-                f"""INSERT INTO channels (snowflake, picture, name) VALUES (:snowflake, :picture, :name) RETURNING snowflake""",
+                return Primitive.Error.InvalidInput(r), 400
+            resp = await app.db.execute(
+                f"""INSERT INTO channels (snowflake, picture, name) VALUES (:snowflake, :picture, :name) RETURNING (snowflake, picture, name)""",
                 values={
                     "snowflake": next(app.snowflake_gen),
                     "picture": url,
                     "name": data.name,
                 },
             )
-            await _add_channel_to_server(app.db, server_snowflake, channel_snowflake)
+            channel_dict = {
+                "snowflake": str(resp[0]),
+                "picture": resp[1],
+                "name": resp[2],
+            }
+            await _add_channel_to_server(
+                app.db, server_snowflake, channel_dict["snowflake"]
+            )
+            await _grant_channel_access(app.db, channel_dict["snowflake"], snowflake)
             return (
-                MakeChannel.Success(
-                    await _grant_channel_access(app.db, channel_snowflake, snowflake)
-                ),
+                cast(Primitive.Channel, channel_dict),
                 200,
             )
         else:
-            return MakeChannel.Unauthorized(response), 401
+            return Primitive.Error.Unauthorized(response), 401
     else:
-        return MakeChannel.Unauthorized("Token is invalid"), 401
-
-
-class ChannelInfo:
-    Headers = Primitive.TokenHeader
-
-    @dataclass
-    class Info:
-        info: TypedDict(
-            "Channel",
-            {
-                "name": str,
-                "picture": Optional[str],
-                "snowflake": str,
-                "message_count": int,
-            },
-        )
-
-    Unauthorized = Primitive.Error
+        return Primitive.Error.Unauthorized("Token is invalid"), 401
 
 
 @bp.get("/<channel_snowflake>")
 @tag(["Channels", "Info"])
-@validate_headers(ChannelInfo.Headers)
-@validate_response(ChannelInfo.Info, 200)
-@validate_response(ChannelInfo.Unauthorized, 401)
-async def channel_info(channel_snowflake: str, headers: ChannelInfo.Headers):
+@validate_headers(Primitive.Header.Token)
+@validate_response(Primitive.Channel, 200)
+@validate_response(Primitive.Error.Unauthorized, 401)
+async def channel_info(channel_snowflake: str, headers: Primitive.Header.Token):
     snowflake = await _get_snowflake_from_token(app.db, headers.x_token)
     if snowflake is not None:
         if await _has_access_to_channel(app.db, channel_snowflake, snowflake):
@@ -141,41 +97,29 @@ async def channel_info(channel_snowflake: str, headers: ChannelInfo.Headers):
             if info is None:
                 return
             return (
-                ChannelInfo.Info(info),
+                cast(Primitive.Channel, info),
                 200,
             )
         else:
             return (
-                ChannelInfo.Unauthorized("You do not have access to this channel"),
+                Primitive.Error.Unauthorized("You do not have access to this channel"),
                 401,
             )
     else:
-        return ChannelInfo.Unauthorized("Token is invalid"), 401
-
-
-class DeleteChannel:
-    Headers = Primitive.TokenHeader
-
-    @dataclass
-    class Data:
-        password: str
-
-    Unauthorized = Primitive.Error
-    NotExist = Primitive.Error
-    Success = Primitive.GenericStr
+        return Primitive.Error.Unauthorized("Token is invalid"), 401
 
 
 @bp.delete("/<server_snowflake>/<channel_snowflake>")
 @tag(["Channels"])
-@validate_headers(DeleteChannel.Headers)
-@validate_request(DeleteChannel.Data)
-@validate_response(DeleteChannel.Unauthorized, 401)
-@validate_response(DeleteChannel.Success, 204)
+@validate_headers(Primitive.Header.Token)
+@validate_request(Primitive.Option.Password)
+@validate_response(Primitive.Error.Unauthorized, 401)
+@validate_response(Primitive.Response.Success, 204)
 async def channel_delete(
     server_snowflake: str,
     channel_snowflake: str,
-    data: DeleteChannel.Data,
-    headers: DeleteChannel.Headers,
+    data: Primitive.Option.Password,
+    headers: Primitive.Header.Token,
 ):
     snowflake = await _get_snowflake_from_token(app.db, headers.x_token)
     if snowflake is not None:
@@ -192,125 +136,29 @@ async def channel_delete(
                     app.db, channel_snowflake, server_snowflake, snowflake
                 )
                 if type(response) == str:
-                    return DeleteChannel.Unauthorized(response), 401
-                return DeleteChannel.Success(f"Channel successfully deleted"), 201
-            return DeleteChannel.Unauthorized("Incorrect password"), 401
+                    return Primitive.Error.Unauthorized(response), 401
+                return Primitive.Response.Success(f"Channel successfully deleted"), 201
+            return Primitive.Error.Unauthorized("Incorrect password"), 401
         else:
             return (
-                DeleteChannel.Unauthorized("You do not have access to this channel"),
+                Primitive.Error.Unauthorized("You do not have access to this channel"),
                 401,
             )
     else:
-        return DeleteChannel.Unauthorized("Token is invalid"), 401
-
-
-class GetMessages:
-    Headers = Primitive.TokenHeader
-
-    @dataclass
-    class Query:
-        limit: Optional[int] = None
-        before: Optional[str] = None
-
-    @dataclass
-    class Messages:
-        messages: list[
-            TypedDict(
-                "Message",
-                {
-                    "content": str,
-                    "author": TypedDict(
-                        "User",
-                        {
-                            "snowflake": str,
-                            "username": str,
-                            "nickname": Optional[str],
-                            "picture": Optional[str],
-                        },
-                    ),
-                    "snowflake": str,
-                },
-            )
-        ]
-
-    Unauthorized = Primitive.Error
-    Failure = Primitive.Error
-
-
-@bp.get("/<channel_snowflake>/messages")
-@tag(["Channels", "Info"])
-@validate_headers(GetMessages.Headers)
-@validate_querystring(GetMessages.Query)
-@validate_response(GetMessages.Messages, 200)
-@validate_response(GetMessages.Unauthorized, 401)
-@validate_response(GetMessages.Failure, 400)
-async def channel_get_messages(
-    channel_snowflake: str, headers: GetMessages.Headers, query_args: GetMessages.Query
-):
-    snowflake = await _get_snowflake_from_token(app.db, headers.x_token)
-    if channel_snowflake == "0":
-        await _grant_channel_access(app.db, channel_snowflake, snowflake)
-    if snowflake is not None:
-        if validate_snowflake(channel_snowflake):
-            if await _has_access_to_channel(app.db, channel_snowflake, snowflake):
-                messages = await _get_channel_messages(
-                    app.db, channel_snowflake, query_args.limit, query_args.before
-                )
-                if type(messages) == str:
-                    return GetMessages.Failure(messages), 400
-                else:
-                    return GetMessages.Messages(messages), 200
-            else:
-                return (
-                    GetMessages.Unauthorized("You do not have access to this channel"),
-                    401,
-                )
-        else:
-            return GetMessages.Failure(f"{channel_snowflake} is invalid"), 400
-    else:
-        return GetMessages.Unauthorized("Token is invalid"), 401
-
-
-class CreateMessage:
-    Headers = Primitive.TokenHeader
-
-    @dataclass
-    class Success:
-        message: TypedDict(
-            "Message",
-            {
-                "content": str,
-                "author": TypedDict(
-                    "User",
-                    {
-                        "snowflake": str,
-                        "username": str,
-                        "nickname": Optional[str],
-                        "picture": Optional[str],
-                    },
-                ),
-                "snowflake": str,
-            },
-        )
-
-    Unauthorized = Primitive.Error
-
-    @dataclass
-    class Data:
-        content: str
-
-    Failure = Primitive.Error
+        return Primitive.Error.Unauthorized("Token is invalid"), 401
 
 
 @bp.put("/<channel_snowflake>/messages")
 @tag(["Channels", "Creation"])
-@validate_headers(CreateMessage.Headers)
-@validate_request(CreateMessage.Data)
-@validate_response(CreateMessage.Success, 200)
-@validate_response(CreateMessage.Unauthorized, 401)
-@validate_response(CreateMessage.Failure, 400)
+@validate_headers(Primitive.Header.Token)
+@validate_request(Primitive.Create.Message)
+@validate_response(Primitive.Message, 200)
+@validate_response(Primitive.Error.Unauthorized, 401)
+@validate_response(Primitive.Error.InvalidInput, 400)
 async def channel_create_message(
-    channel_snowflake: str, data: CreateMessage.Data, headers: CreateMessage.Headers
+    channel_snowflake: str,
+    data: Primitive.Create.Message,
+    headers: Primitive.Header.Token,
 ):
     snowflake = await _get_snowflake_from_token(app.db, headers.x_token)
     if snowflake is not None:
@@ -328,13 +176,54 @@ async def channel_create_message(
                     for usertoken in usertokens:
                         if app.ws.get(usertoken, None) is not None:
                             app.ws[usertoken].append({"code": 100, "data": sendmsg})
-                return CreateMessage.Success(msg)
+                return cast(Primitive.Message, msg)
             else:
-                return CreateMessage.Failure(resp)
+                return Primitive.Error.InvalidInput(resp)
         else:
             return (
-                CreateMessage.Unauthorized("You do not have access to this channel"),
+                Primitive.Error.Unauthorized("You do not have access to this channel"),
                 401,
             )
     else:
-        return CreateMessage.Unauthorized("Token is invalid"), 401
+        return Primitive.Error.Unauthorized("Token is invalid"), 401
+
+
+@bp.get("/<channel_snowflake>/messages")
+@tag(["Channels", "Info"])
+@validate_headers(Primitive.Header.Token)
+@validate_querystring(Primitive.Option.MessagesQuery)
+@validate_response(Primitive.List.Messages, 200)
+@validate_response(Primitive.Error.Unauthorized, 401)
+@validate_response(Primitive.Error.InvalidSnowflake, 400)
+@validate_response(Primitive.Error.InvalidInput, 400)
+async def channel_get_messages(
+    channel_snowflake: str,
+    headers: Primitive.Header.Token,
+    query_args: Primitive.Option.MessagesQuery,
+):
+    snowflake = await _get_snowflake_from_token(app.db, headers.x_token)
+    if snowflake is not None:
+        if validate_snowflake(channel_snowflake):
+            if await _has_access_to_channel(app.db, channel_snowflake, snowflake):
+                messages = await _get_channel_messages(
+                    app.db, channel_snowflake, query_args.limit, query_args.before
+                )
+                if type(messages) == str:
+                    return Primitive.Error.InvalidInput(messages), 400
+                else:
+                    pass
+                    return Primitive.List.Messages(messages), 200
+            else:
+                return (
+                    Primitive.Error.Unauthorized(
+                        "You do not have access to this channel"
+                    ),
+                    401,
+                )
+        else:
+            return (
+                Primitive.Error.InvalidSnowflake(f"{channel_snowflake} is invalid"),
+                400,
+            )
+    else:
+        return Primitive.Error.Unauthorized("Token is invalid"), 401

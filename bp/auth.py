@@ -1,12 +1,13 @@
 import codecs
 from dataclasses import dataclass
+from typing import cast
 import zlib
 import bcrypt
 from quart import Blueprint
 from quart import current_app as app
 from quart_schema import tag, validate_headers, validate_request, validate_response
 
-from common.primitive import Primitive
+import common.primitive as Primitive
 from common.utils import validate_string
 from common.db import (
     _fetch_user_data,
@@ -21,34 +22,23 @@ from common.db import (
 bp = Blueprint("auth", __name__)
 
 
-class Registration:
-    @dataclass
-    class Data:
-        username: str
-        password: str
-
-    Success = Primitive.Snowflake
-    Failure = Primitive.Error
-    InputError = Primitive.Error
-
-
 @bp.put("/register")
 @tag(["Authorization", "Creation"])
-@validate_request(Registration.Data)
-@validate_response(Registration.Success, 201)
-@validate_response(Registration.Failure, 409)
-@validate_response(Registration.InputError, 400)
-async def auth_register(data: Registration.Data):
+@validate_request(Primitive.Create.User)
+@validate_response(Primitive.User, 201)
+@validate_response(Primitive.Error.AlreadyExists, 409)
+@validate_response(Primitive.Error.InvalidInput, 400)
+async def auth_register(data: Primitive.Create.User):
     r = validate_string(data.username, minlength=3)
     if r is not None:
-        return Registration.InputError(r), 400
+        return Primitive.Error.InvalidInput(r), 400
     r = validate_string(data.password)
     if r is not None:
-        return Registration.InputError(r), 400
+        return Primitive.Error.InvalidInput(r), 400
 
     try:
-        snowflake = await app.db.fetch_val(
-            f"""INSERT INTO users (snowflake, username, passwordhash) VALUES (:snowflake, :username, :passwordhash) RETURNING snowflake""",
+        userinfo = await app.db.fetch_val(
+            f"""INSERT INTO users (snowflake, username, passwordhash, nickname, picture) VALUES (:snowflake, :username, :passwordhash, :nickname, :picture) RETURNING (snowflake, username, nickname, picture)""",
             values={
                 "snowflake": next(app.snowflake_gen),
                 "username": f"{data.username}",
@@ -57,143 +47,121 @@ async def auth_register(data: Registration.Data):
                         codecs.encode(data.password, "utf-8"), bcrypt.gensalt()
                     )
                 ),
+                "nickname": data.nickname,
+                "picture": data.picture,
             },
         )
     except Exception as e:
-        return Registration.Failure(f"""User already exists"""), 409
-    return Registration.Success(str(snowflake)), 201
-
-
-class Login:
-    @dataclass
-    class Data:
-        username: str
-        password: str
-        session_name: str
-
-    Success = Primitive.Token
-    InputError = Primitive.Error
-    Failure = Primitive.Error
-    NotExist = Primitive.Error
-    Ratelimited = Primitive.Error
+        return Primitive.Error.AlreadyExists(f"""User already exists"""), 409
+    return Primitive.User(str(userinfo[0]), userinfo[1], userinfo[2], userinfo[3]), 201
 
 
 @bp.post("/login")
 @tag(["Authorization"])
-@validate_request(Login.Data)
-@validate_response(Login.Success, 201)
-@validate_response(Login.Failure, 401)
-@validate_response(Login.NotExist, 404)
-@validate_response(Login.Ratelimited, 429)
-@validate_response(Login.InputError, 400)
-async def auth_login(data: Login.Data):
+@validate_request(Primitive.Create.Token)
+@validate_response(Primitive.Session, 201)
+@validate_response(Primitive.Error.Unauthorized, 401)
+@validate_response(Primitive.Error.DoesNotExist, 404)
+@validate_response(Primitive.Error.Ratelimited, 429)
+@validate_response(Primitive.Error.InvalidInput, 400)
+async def auth_login(data: Primitive.Create.Token):
     ratelimit = 300
     ratecount = 1
     r = validate_string(data.username, minlength=3)
     if r is not None:
-        return Login.InputError(r)
+        return Primitive.Error.InvalidInput(r), 400
     r = validate_string(data.password)
     if r is not None:
-        return Login.InputError(r)
+        return Primitive.Error.InvalidInput(r), 400
     r = validate_string(data.session_name, minlength=1, maxlength=100)
     if r is not None:
-        return Login.InputError(r)
+        return Primitive.Error.InvalidInput(r), 400
     d = await _fetch_user_data(
         app.db, username=data.username, field="(passwordhash, snowflake)"
     )
 
     if d is Exception or d is None:
-        return Login.NotExist("User does not exist"), 404
+        return Primitive.Error.DoesNotExist("User does not exist"), 404
 
     (pw, snowflake) = d
-    if not await _is_ratelimited(
+    ratelimitdata = await _is_ratelimited(
         app.db, "/api/auth/login", ratelimit, ratecount, snowflake
-    ):
+    )
+    if ratelimitdata == 0:
         if bcrypt.checkpw(codecs.encode(data.password, "utf-8"), zlib.decompress(pw)):
-            token = await _add_user_token(app, snowflake, data.session_name)
-            return Login.Success(str(token)), 201
-        return Login.Failure("Incorrect password"), 401
+            return (
+                cast(
+                    Primitive.Session,
+                    await _add_user_token(app, snowflake, data.session_name),
+                ),
+                201,
+            )
+        return Primitive.Error.Unauthorized("Incorrect password"), 401
     else:
         return (
-            Login.Ratelimited(
-                f"You can only use this endpoint {ratecount} time(s) every {ratelimit} seconds"
+            Primitive.Error.Ratelimited(
+                f"You can only use this endpoint {ratecount} time(s) every {ratelimit} seconds",
+                ratelimitdata,
             ),
             429,
         )
 
 
-class Logout:
-    Success = Primitive.GenericStr
-    Headers = Primitive.TokenHeader
-    Failure = Primitive.Error
-
-
 @bp.delete("/logout")
 @tag(["Authorization"])
-@validate_response(Logout.Success, 201)
-@validate_response(Logout.Failure, 401)
-@validate_headers(Logout.Headers)
-async def auth_logout(headers: Logout.Headers):
+@validate_response(Primitive.Response.Success, 201)
+@validate_response(Primitive.Error.DoesNotExist, 401)
+@validate_headers(Primitive.Header.Token)
+async def auth_logout(headers: Primitive.Header.Token):
     response = await _remove_user_token(app.db, headers.x_token)
     if response is not None:
         return (
-            Logout.Success(f"Successfully invalidated token for session {response}"),
+            Primitive.Response.Success(
+                f"Successfully invalidated token for session {response}"
+            ),
             201,
         )
     else:
-        return Logout.Failure(f"Token does not exist"), 401
-
-
-class Sessions:
-    Headers = Primitive.TokenHeader
-    SessionsList = Primitive.GenericList
-    Failure = Primitive.Error
+        return Primitive.Error.DoesNotExist(f"Token does not exist"), 401
 
 
 @bp.get("/sessions")
 @tag(["Info"])
-@validate_headers(Sessions.Headers)
-@validate_response(Sessions.SessionsList, 200)
-@validate_response(Sessions.Failure, 401)
-async def auth_sessions(headers: Sessions.Headers):
+@validate_headers(Primitive.Header.Token)
+@validate_response(Primitive.List.Sessions, 200)
+@validate_response(Primitive.Error.Unauthorized, 401)
+async def auth_sessions(headers: Primitive.Header.Token):
     snowflake = await _get_snowflake_from_token(app.db, headers.x_token)
     if snowflake is not None:
-        tokenlist = await _get_all_tokens(app.db, snowflake)
-        return Sessions.SessionsList(tokenlist), 200
+        return Primitive.List.Sessions(await _get_all_tokens(app.db, snowflake)), 200
     else:
-        return Sessions.Failure("Invalid token"), 401
-
-
-class DeleteAccount:
-    Headers = Primitive.TokenHeader
-
-    @dataclass
-    class Data:
-        password: str
-
-    Unauthorized = Primitive.Error
-    NotExist = Primitive.Error
-    Success = Primitive.GenericStr
+        return Primitive.Error.Unauthorized("Invalid token"), 401
 
 
 @bp.delete("/remove_account_yes_im_serous_wa_wa_we_wa")
 @tag(["Authorization"])
-@validate_headers(DeleteAccount.Headers)
-@validate_request(DeleteAccount.Data)
-@validate_response(DeleteAccount.Unauthorized, 401)
-@validate_response(DeleteAccount.Success, 204)
-@validate_response(DeleteAccount.NotExist, 404)
-async def auth_remove(data: DeleteAccount.Data, headers: DeleteAccount.Headers):
+@validate_headers(Primitive.Header.Token)
+@validate_request(Primitive.Option.Password)
+@validate_response(Primitive.Error.Unauthorized, 401)
+@validate_response(Primitive.Response.Success, 204)
+@validate_response(Primitive.Error.DoesNotExist, 404)
+async def auth_remove(data: Primitive.Option.Password, headers: Primitive.Header.Token):
     snowflake = await _get_snowflake_from_token(app.db, headers.x_token)
-    pw = await _fetch_user_data(
-        app.db,
-        snowflake=snowflake,
-        field="passwordhash",
-    )
-    if pw is Exception or pw is None:
-        return DeleteAccount.NotExist("User does not exist"), 404
+    if snowflake is not None:
+        pw = await _fetch_user_data(
+            app.db,
+            snowflake=snowflake,
+            field="passwordhash",
+        )
+        if pw is Exception or pw is None:
+            return Primitive.Error.DoesNotExist("User does not exist"), 404
 
-    if bcrypt.checkpw(codecs.encode(data.password, "utf-8"), zlib.decompress(pw)):
-        await _delete_user(app.db, snowflake)
-        return DeleteAccount.Success("Dont let the door hit you on the way out"), 201
-    return DeleteAccount.Unauthorized("Incorrect password"), 401
+        if bcrypt.checkpw(codecs.encode(data.password, "utf-8"), zlib.decompress(pw)):
+            await _delete_user(app.db, snowflake)
+            return (
+                Primitive.Response.Success("Dont let the door hit you on the way out"),
+                201,
+            )
+        return Primitive.Error.Unauthorized("Incorrect password"), 401
+    else:
+        return Primitive.Error.Unauthorized("Invalid token"), 401

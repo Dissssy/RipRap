@@ -3,7 +3,6 @@ import hashlib
 import math
 from time import time
 from typing import Optional
-import uuid
 from databases import Database
 import quart
 
@@ -19,7 +18,7 @@ async def _create_db_connection() -> Database:
 async def _is_ratelimited(
     db: Database, endpoint_id: str, t: int, maxuses: int, snowflake: str
 ):
-    return False
+    return 0
     await db.execute(
         f"""DELETE FROM ratelimit WHERE apiendpoint = :apiendpoint AND timecalled <= :timecalled""",
         values={"apiendpoint": endpoint_id, "timecalled": math.floor(time()) - t},
@@ -39,9 +38,13 @@ async def _is_ratelimited(
                 "apiendpoint": endpoint_id,
             },
         )
-        return False
+        return 0
     else:
-        return True
+        timecalled = await db.fetch_one(
+            f"""SELECT timecalled FROM ratelimit WHERE snowflake = :snowflake AND apiendpoint = :apiendpoint LIMIT 1""",
+            values={"snowflake": int(snowflake), "apiendpoint": endpoint_id},
+        )
+        return time() - timecalled
 
 
 async def _fetch_user_data(
@@ -65,8 +68,8 @@ async def _fetch_user_data(
 async def _add_user_token(
     app: quart.app, user_snowflake: str, session_name: str
 ) -> str:
-    return await app.db.fetch_val(
-        f"""INSERT INTO tokens (token, snowflake, session_name) VALUES (:token, :snowflake, :session_name) RETURNING token""",
+    info = await app.db.fetch_val(
+        f"""INSERT INTO tokens (token, snowflake, session_name) VALUES (:token, :snowflake, :session_name) RETURNING (token, session_name)""",
         values={
             "token": hashlib.sha512(
                 codecs.encode(
@@ -77,6 +80,10 @@ async def _add_user_token(
             "session_name": session_name,
         },
     )
+    return {
+        "token": info[0],
+        "session_name": info[1]
+    }
 
 
 async def _remove_user_token(db: Database, token: str):
@@ -213,7 +220,7 @@ async def _get_server_info(db: Database, server_snowflake: str):
         return {
             "name": baseinfo["name"],
             "picture": baseinfo["picture"],
-            "owner_snowflake": str(baseinfo["owner_snowflake"]),
+            "owner": await _get_user_info(db, str(baseinfo["owner_snowflake"])),
             "snowflake": str(baseinfo["snowflake"]),
             "channels": finalchannellist,
         }
@@ -456,8 +463,30 @@ async def _get_user_tokens(db: Database, user_snowflake: str):
 
 
 async def _get_channel_users(db: Database, channel_snowflake: str):
-    users = await db.fetch_all(
-        """SELECT user_snowflake FROM channel_access WHERE channel_snowflake = :channel_snowflake""",
-        values={"channel_snowflake": int(channel_snowflake)},
-    )
+    if channel_snowflake == "0":
+        users = await db.fetch_all("""SELECT snowflake FROM users""")
+    else:
+        users = await db.fetch_all(
+            """SELECT user_snowflake FROM channel_access WHERE channel_snowflake = :channel_snowflake""",
+            values={"channel_snowflake": int(channel_snowflake)},
+        )
     return [str(x[0]) for x in users]
+
+async def _update_user_info(db: Database, user_snowflake: str, nickname: Optional[str] = None, picture: Optional[str] = None):
+    oldinfo = await _get_user_info(db, user_snowflake)
+    values= {"nickname": oldinfo["nickname"], "picture": oldinfo["picture"], "snowflake": int(user_snowflake)}
+    if nickname is not None:
+        values["nickname"] = nickname
+    if picture is not None:
+        values["picture"] = picture
+
+    
+    userinfo = await db.fetch_val(
+        """UPDATE users SET nickname = :nickname, picture = :picture WHERE snowflake = :snowflake RETURNING (snowflake, username, nickname, picture)""", values=values
+    )
+    return {
+        "snowflake": str(userinfo[0]),
+        "username": userinfo[1],
+        "nickname": userinfo[2],
+        "picture": userinfo[3]
+    }

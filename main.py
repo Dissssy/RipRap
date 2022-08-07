@@ -8,7 +8,7 @@ sys.path.append(".")
 
 import asyncio
 import zlib
-from quart import Quart, Websocket, websocket
+from quart import Quart, websocket
 from quart_schema import (
     QuartSchema,
     validate_headers,
@@ -20,13 +20,18 @@ import uuid
 
 import config
 
-from common.primitive import Primitive
+import common.primitive as Primitive
 from common.db import _create_db_connection, _get_snowflake_from_token
 
 import bp.auth, bp.server, bp.channel, bp.user
 
 app = Quart(__name__)
-QuartSchema(app, swagger_ui_path="/api/docs", openapi_path="/api/openapi.json")
+QuartSchema(
+    app,
+    swagger_ui_path="/api/docs",
+    openapi_path="/api/openapi.json",
+    redoc_ui_path="/api/redocs",
+)
 app.config.update(
     {
         "DATABASE_URL": config.DATABASE_URL,

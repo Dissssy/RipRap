@@ -1,6 +1,5 @@
 import codecs
-from dataclasses import dataclass
-from typing import Optional, TypedDict
+from typing import cast
 import zlib
 import bcrypt
 from quart import Blueprint
@@ -11,82 +10,39 @@ from common.db import (
     _fetch_user_data,
     _get_server_info,
     _get_snowflake_from_token,
+    _get_user_info,
     _get_user_servers,
     _grant_server_access,
     _has_access_to_server,
 )
 
-from common.primitive import Primitive
+import common.primitive as Primitive
 from common.utils import validate_string
 
 bp = Blueprint("server", __name__)
 
 
-class Servers:
-    Headers = Primitive.TokenHeader
-
-    @dataclass
-    class Servers:
-        servers: list[
-            TypedDict(
-                "Server",
-                {
-                    "name": str,
-                    "picture": Optional[str],
-                    "owner_snowflake": str,
-                    "snowflake": str,
-                    "channels": list[
-                        TypedDict(
-                            "Channel",
-                            {
-                                "name": str,
-                                "picture": Optional[str],
-                                "snowflake": str,
-                                "message_count": int,
-                            },
-                        )
-                    ],
-                },
-            )
-        ]
-
-    Unauthorized = Primitive.Error
-
-
 @bp.get("/list")
 @tag(["Servers", "Info"])
-@validate_headers(Servers.Headers)
-@validate_response(Servers.Servers, 200)
-@validate_response(Servers.Unauthorized, 401)
-async def server_userlist(headers: Servers.Headers):
+@validate_headers(Primitive.Header.Token)
+@validate_response(Primitive.List.Servers, 200)
+@validate_response(Primitive.Error.Unauthorized, 401)
+async def server_userlist(headers: Primitive.Header.Token):
     snowflake = await _get_snowflake_from_token(app.db, headers.x_token)
     if snowflake is not None:
-        return Servers.Servers(await _get_user_servers(app.db, snowflake)), 200
+        return Primitive.List.Servers(await _get_user_servers(app.db, snowflake)), 200
     else:
-        return Servers.Unauthorized("Token is invalid"), 401
-
-
-class MakeServer:
-    Headers = Primitive.TokenHeader
-
-    @dataclass
-    class Data:
-        name: str
-        picture_url: Optional[str]
-
-    Success = Primitive.Snowflake
-    InputError = Primitive.Error
-    Unauthorized = Primitive.Error
+        return Primitive.Error.Unauthorized("Token is invalid"), 401
 
 
 @bp.put("/create")
 @tag(["Servers", "Creation"])
-@validate_headers(MakeServer.Headers)
-@validate_request(MakeServer.Data)
-@validate_response(MakeServer.Success, 200)
-@validate_response(MakeServer.InputError, 400)
-@validate_response(MakeServer.Unauthorized, 401)
-async def server_make(data: MakeServer.Data, headers: MakeServer.Headers):
+@validate_headers(Primitive.Header.Token)
+@validate_request(Primitive.Create.Server)
+@validate_response(Primitive.Server, 200)
+@validate_response(Primitive.Error.InvalidInput, 400)
+@validate_response(Primitive.Error.Unauthorized, 401)
+async def server_make(data: Primitive.Create.Server, headers: Primitive.Header.Token):
     snowflake = await _get_snowflake_from_token(app.db, headers.x_token)
     if snowflake is not None:
         url = ""
@@ -94,12 +50,12 @@ async def server_make(data: MakeServer.Data, headers: MakeServer.Headers):
             url = data.picture_url
         r = validate_string(url, minlength=0, maxlength=100)
         if r is not None:
-            return MakeServer.InputError(r)
+            return Primitive.Error.InvalidInput(r), 400
         r = validate_string(data.name, minlength=1, maxlength=100)
         if r is not None:
-            return MakeServer.InputError(r)
-        server_snowflake = await app.db.execute(
-            f"""INSERT INTO servers (snowflake, picture, owner_snowflake, name) VALUES (:snowflake, :picture, :owner_snowflake, :name) RETURNING snowflake""",
+            return Primitive.Error.InvalidInput(r), 400
+        resp = await app.db.execute(
+            f"""INSERT INTO servers (snowflake, picture, owner_snowflake, name) VALUES (:snowflake, :picture, :owner_snowflake, :name) RETURNING (snowflake, picture, owner_snowflake, name)""",
             values={
                 "snowflake": next(app.snowflake_gen),
                 "picture": url,
@@ -107,89 +63,56 @@ async def server_make(data: MakeServer.Data, headers: MakeServer.Headers):
                 "name": data.name,
             },
         )
+        server_dict = {
+            "snowflake": str(resp[0]),
+            "picture": resp[1],
+            "owner": _get_user_info(app.db, resp[2]),
+            "name": resp[3],
+        }
+        await _grant_server_access(app.db, server_dict["snowflake"], snowflake)
         return (
-            MakeServer.Success(
-                await _grant_server_access(app.db, server_snowflake, snowflake)
-            ),
+            cast(Primitive.Server, server_dict),
             200,
         )
 
     else:
-        return MakeServer.Unauthorized("Token is invalid"), 401
-
-
-class ServerInfo:
-    Headers = Primitive.TokenHeader
-
-    @dataclass
-    class Info:
-        name: str
-        image: Optional[str]
-        owner: str
-        snowflake: str
-        channels: list[
-            TypedDict(
-                "Channel",
-                {
-                    "name": str,
-                    "picture": Optional[str],
-                    "snowflake": str,
-                    "message_count": int,
-                },
-            )
-        ]
-
-    Unauthorized = Primitive.Error
+        return Primitive.Error.Unauthorized("Token is invalid"), 401
 
 
 @bp.get("/<server_snowflake>")
 @tag(["Servers", "Info"])
-@validate_headers(ServerInfo.Headers)
-@validate_response(ServerInfo.Info, 200)
-@validate_response(ServerInfo.Unauthorized, 401)
-async def server_info(server_snowflake: str, headers: ServerInfo.Headers):
+@validate_headers(Primitive.Header.Token)
+@validate_response(Primitive.Server, 200)
+@validate_response(Primitive.Error.Unauthorized, 401)
+async def server_info(server_snowflake: str, headers: Primitive.Header.Token):
     snowflake = await _get_snowflake_from_token(app.db, headers.x_token)
     if snowflake is not None:
         if await _has_access_to_server(app.db, server_snowflake, snowflake):
-            info = await _get_server_info(app.db, server_snowflake)
-            if info is None:
-                return
             return (
-                ServerInfo.Info(
-                    info["name"],
-                    info["picture"],
-                    info["owner_snowflake"],
-                    info["snowflake"],
-                    info["channels"],
+                cast(
+                    Primitive.Server, await _get_server_info(app.db, server_snowflake)
                 ),
                 200,
             )
         else:
-            return ServerInfo.Unauthorized("You do not have access to this server"), 401
+            return (
+                Primitive.Error.Unauthorized("You do not have access to this server"),
+                401,
+            )
     else:
-        return ServerInfo.Unauthorized("Token is invalid"), 401
-
-
-class DeleteServer:
-    Headers = Primitive.TokenHeader
-
-    @dataclass
-    class Data:
-        password: str
-
-    Unauthorized = Primitive.Error
-    NotExist = Primitive.Error
-    Success = Primitive.GenericStr
+        return Primitive.Error.Unauthorized("Token is invalid"), 401
 
 
 @bp.delete("/<server_snowflake>")
 @tag(["Servers"])
-@validate_headers(DeleteServer.Headers)
-@validate_request(DeleteServer.Data)
-@validate_response(DeleteServer.Unauthorized, 401)
-@validate_response(DeleteServer.Success, 204)
+@validate_headers(Primitive.Header.Token)
+@validate_request(Primitive.Option.Password)
+@validate_response(Primitive.Error.Unauthorized, 401)
+@validate_response(Primitive.Response.Success, 200)
 async def server_delete(
-    server_snowflake: str, data: DeleteServer.Data, headers: DeleteServer.Headers
+    server_snowflake: str,
+    data: Primitive.Option.Password,
+    headers: Primitive.Header.Token,
 ):
     snowflake = await _get_snowflake_from_token(app.db, headers.x_token)
     if snowflake is not None:
@@ -204,13 +127,13 @@ async def server_delete(
             ):
                 response = await _delete_server(app.db, server_snowflake, snowflake)
                 if type(response) == str:
-                    return DeleteServer.Unauthorized(response), 401
-                return DeleteServer.Success(f"Server successfully deleted"), 201
-            return DeleteServer.Unauthorized("Incorrect password"), 401
+                    return Primitive.Error.Unauthorized(response), 401
+                return Primitive.Response.Success(f"Server successfully deleted"), 200
+            return Primitive.Error.Unauthorized("Incorrect password"), 401
         else:
             return (
-                DeleteServer.Unauthorized("You do not have access to this server"),
+                Primitive.Error.Unauthorized("You do not have access to this server"),
                 401,
             )
     else:
-        return DeleteServer.Unauthorized("Token is invalid"), 401
+        return Primitive.Error.Unauthorized("Token is invalid"), 401
