@@ -41,10 +41,10 @@ class Registration:
 async def auth_register(data: Registration.Data):
     r = validate_string(data.username, minlength=3)
     if r is not None:
-        return Registration.InputError(r)
+        return Registration.InputError(r), 400
     r = validate_string(data.password)
     if r is not None:
-        return Registration.InputError(r)
+        return Registration.InputError(r), 400
 
     try:
         snowflake = await app.db.fetch_val(
@@ -60,7 +60,6 @@ async def auth_register(data: Registration.Data):
             },
         )
     except Exception as e:
-        print(e)
         return Registration.Failure(f"""User already exists"""), 409
     return Registration.Success(str(snowflake)), 201
 

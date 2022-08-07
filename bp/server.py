@@ -25,7 +25,31 @@ bp = Blueprint("server", __name__)
 class Servers:
     Headers = Primitive.TokenHeader
 
-    Servers = Primitive.GenericList
+    @dataclass
+    class Servers:
+        servers: list[
+            TypedDict(
+                "Server",
+                {
+                    "name": str,
+                    "picture": Optional[str],
+                    "owner_snowflake": str,
+                    "snowflake": str,
+                    "channels": list[
+                        TypedDict(
+                            "Channel",
+                            {
+                                "name": str,
+                                "picture": Optional[str],
+                                "snowflake": str,
+                                "message_count": int,
+                            },
+                        )
+                    ],
+                },
+            )
+        ]
+
     Unauthorized = Primitive.Error
 
 
@@ -100,10 +124,20 @@ class ServerInfo:
     @dataclass
     class Info:
         name: str
-        image: str
+        image: Optional[str]
         owner: str
         snowflake: str
-        channels: list[str]
+        channels: list[
+            TypedDict(
+                "Channel",
+                {
+                    "name": str,
+                    "picture": Optional[str],
+                    "snowflake": str,
+                    "message_count": int,
+                },
+            )
+        ]
 
     Unauthorized = Primitive.Error
 

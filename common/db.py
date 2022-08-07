@@ -19,6 +19,7 @@ async def _create_db_connection() -> Database:
 async def _is_ratelimited(
     db: Database, endpoint_id: str, t: int, maxuses: int, snowflake: str
 ):
+    return False
     await db.execute(
         f"""DELETE FROM ratelimit WHERE apiendpoint = :apiendpoint AND timecalled <= :timecalled""",
         values={"apiendpoint": endpoint_id, "timecalled": math.floor(time()) - t},
@@ -87,12 +88,14 @@ async def _remove_user_token(db: Database, token: str):
 
 
 async def _get_snowflake_from_token(db: Database, token: str):
-    return str(
-        await db.fetch_val(
-            f"""SELECT snowflake FROM tokens WHERE token = :token""",
-            values={"token": token},
-        )
+    snowflake = await db.fetch_val(
+        f"""SELECT snowflake FROM tokens WHERE token = :token""",
+        values={"token": token},
     )
+    if snowflake is None:
+        return None
+    else:
+        return str(snowflake)
 
 
 async def _get_all_tokens(db: Database, snowflake: str):
@@ -149,10 +152,15 @@ async def _is_channel(db: Database, snowflake: str):
 
 async def _get_user_servers(db: Database, snowflake: str):
     servers = await db.fetch_all(
-        """SELECT * FROM server_access WHERE user_snowflake = :user_snowflake""",
+        """SELECT server_snowflake FROM server_access WHERE user_snowflake = :user_snowflake""",
         values={"user_snowflake": int(snowflake)},
     )
-    return [str(x[0]) for x in servers]
+    serverlist = [str(x[0]) for x in servers]
+    serverlist.append("0")
+    finallist = []
+    for server in serverlist:
+        finallist.append(await _get_server_info(db, server))
+    return finallist
 
 
 async def _grant_server_access(
@@ -170,6 +178,8 @@ async def _grant_server_access(
 async def _has_access_to_server(
     db: Database, server_snowflake: str, user_snowflake: str
 ):
+    if server_snowflake == "0":
+        return True
     if (
         await db.execute(
             """SELECT COUNT(*) FROM server_access WHERE user_snowflake = :user_snowflake AND server_snowflake = :server_snowflake""",
@@ -190,18 +200,22 @@ async def _get_server_info(db: Database, server_snowflake: str):
         values={"snowflake": int(server_snowflake)},
     )
     if baseinfo is not None:
+        channellist = [
+            x[0]
+            for x in await db.fetch_all(
+                """SELECT channel_snowflake FROM server_channels WHERE server_snowflake = :server_snowflake""",
+                values={"server_snowflake": int(server_snowflake)},
+            )
+        ]
+        finalchannellist = []
+        for channel in channellist:
+            finalchannellist.append(await _get_channel_info(db, channel))
         return {
             "name": baseinfo["name"],
             "picture": baseinfo["picture"],
-            "owner_snowflake": baseinfo["owner_snowflake"],
-            "snowflake": baseinfo["snowflake"],
-            "channels": [
-                x[0]
-                for x in await db.fetch_all(
-                    """SELECT channel_snowflake FROM server_channels WHERE server_snowflake = :server_snowflake""",
-                    values={"server_snowflake": int(server_snowflake)},
-                )
-            ],
+            "owner_snowflake": str(baseinfo["owner_snowflake"]),
+            "snowflake": str(baseinfo["snowflake"]),
+            "channels": finalchannellist,
         }
     return None
 
@@ -266,8 +280,8 @@ async def _get_channel_info(db: Database, channel_snowflake: str):
         return {
             "name": baseinfo["name"],
             "picture": baseinfo["picture"],
-            "snowflake": baseinfo["snowflake"],
-            "messages": await db.fetch_val(
+            "snowflake": str(baseinfo["snowflake"]),
+            "message_count": await db.fetch_val(
                 """SELECT COUNT(*) FROM messages WHERE channel_snowflake = :channel_snowflake""",
                 values={"channel_snowflake": int(channel_snowflake)},
             ),
@@ -298,6 +312,8 @@ async def _grant_channel_access(
 async def _has_access_to_channel(
     db: Database, channel_snowflake: int, user_snowflake: int
 ):
+    if channel_snowflake == "0":
+        return True
     if (
         await db.execute(
             """SELECT COUNT(*) FROM channel_access WHERE user_snowflake = :user_snowflake AND channel_snowflake = :channel_snowflake""",
@@ -315,7 +331,7 @@ async def _has_access_to_channel(
 async def _is_owner(db: Database, server_snowflake: str, user_snowflake: str):
     info = await _get_server_info(db, server_snowflake)
     if info is not None:
-        if info["owner_snowflake"] == int(user_snowflake):
+        if int(info["owner_snowflake"]) == int(user_snowflake):
             return True
         else:
             return "You are not the owner of this server"
@@ -326,10 +342,7 @@ maxmessages = 100
 
 
 async def _get_channel_messages(
-    db: Database,
-    channel_snowflake: str,
-    limit=None,
-    before=None,
+    db: Database, channel_snowflake: str, limit=None, before=None, _check=True
 ):
     values = {"channel_snowflake": int(channel_snowflake)}
     limitval = 50
@@ -348,23 +361,32 @@ async def _get_channel_messages(
         f"""SELECT (snowflake, author_snowflake, content) FROM messages WHERE {beforestr}channel_snowflake = :channel_snowflake ORDER BY snowflake DESC LIMIT {limitval}""",
         values=values,
     )
-    for x in messages:
-        print(x[0][0])
-    return [
+    messageslist = [
         {
             "snowflake": str(x[0][0]),
-            "author": str(x[0][1]),
+            "author": await _get_user_info(db, str(x[0][1])),
             "content": x[0][2],
         }
         for x in messages
     ]
+    # if _check:
+    #     if (
+    #         len(
+    #             await _get_channel_messages(
+    #                 db, channel_snowflake, 1, messageslist[-1]["snowflake"], False
+    #             )
+    #         )
+    #         == 0
+    #     ):
+    #         messageslist.append(None)
+    return messageslist
 
 
 async def _create_message(
     app: quart.app, channel_snowflake: str, author_snowflake: str, content: str
 ):
-    return await app.db.fetch_val(
-        """INSERT INTO messages (snowflake, channel_snowflake, author_snowflake, content) VALUES (:snowflake, :channel_snowflake, :author_snowflake, :content) RETURNING snowflake""",
+    msg = await app.db.fetch_val(
+        """INSERT INTO messages (snowflake, channel_snowflake, author_snowflake, content) VALUES (:snowflake, :channel_snowflake, :author_snowflake, :content) RETURNING (snowflake, author_snowflake, content)""",
         values={
             "snowflake": next(app.snowflake_gen),
             "channel_snowflake": int(channel_snowflake),
@@ -372,6 +394,11 @@ async def _create_message(
             "content": content,
         },
     )
+    return {
+        "content": msg[2],
+        "author": await _get_user_info(app.db, str(msg[1])),
+        "snowflake": str(msg[0]),
+    }
 
 
 async def _message_exists(db: Database, message_snowflake: str):
@@ -383,3 +410,54 @@ async def _message_exists(db: Database, message_snowflake: str):
         return True
     else:
         return False
+
+
+async def _add_channel_to_server(
+    db: Database, server_snowflake: str, channel_snowflake: str
+):
+    await db.execute(
+        f"""INSERT INTO server_channels (server_snowflake, channel_snowflake) VALUES (:server_snowflake, :channel_snowflake)""",
+        values={
+            "server_snowflake": int(server_snowflake),
+            "channel_snowflake": int(channel_snowflake),
+        },
+    )
+
+
+async def _get_user_info(db: Database, user_snowflake: str):
+    user = await db.fetch_one(
+        f"""SELECT (snowflake, username, nickname, picture) FROM users WHERE snowflake = :snowflake""",
+        values={"snowflake": int(user_snowflake)},
+    )
+    if user is not None:
+        return {
+            "snowflake": str(user[0][0]),
+            "username": user[0][1],
+            "nickname": user[0][2],
+            "picture": user[0][3],
+        }
+    else:
+        return None
+
+
+async def _add_friend(db: Database, friender: str, friendee: str):
+    pass
+
+
+# async def _is_friend(db: Database, friender: str, friendee: Optional[str]):
+
+
+async def _get_user_tokens(db: Database, user_snowflake: str):
+    tokens = await db.fetch_all(
+        """SELECT token FROM tokens WHERE snowflake = :snowflake""",
+        values={"snowflake": int(user_snowflake)},
+    )
+    return [str(x[0]) for x in tokens]
+
+
+async def _get_channel_users(db: Database, channel_snowflake: str):
+    users = await db.fetch_all(
+        """SELECT user_snowflake FROM channel_access WHERE channel_snowflake = :channel_snowflake""",
+        values={"channel_snowflake": int(channel_snowflake)},
+    )
+    return [str(x[0]) for x in users]
