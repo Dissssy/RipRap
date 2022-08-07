@@ -29,7 +29,7 @@ from common.db import (
 )
 
 from common.primitive import Primitive
-from common.utils import validate_string
+from common.utils import validate_snowflake, validate_string
 
 bp = Blueprint("channel", __name__)
 
@@ -251,19 +251,22 @@ async def channel_get_messages(
     if channel_snowflake == "0":
         await _grant_channel_access(app.db, channel_snowflake, snowflake)
     if snowflake is not None:
-        if await _has_access_to_channel(app.db, channel_snowflake, snowflake):
-            messages = await _get_channel_messages(
-                app.db, channel_snowflake, query_args.limit, query_args.before
-            )
-            if type(messages) == str:
-                return GetMessages.Failure(messages), 400
+        if validate_snowflake():
+            if await _has_access_to_channel(app.db, channel_snowflake, snowflake):
+                messages = await _get_channel_messages(
+                    app.db, channel_snowflake, query_args.limit, query_args.before
+                )
+                if type(messages) == str:
+                    return GetMessages.Failure(messages), 400
+                else:
+                    return GetMessages.Messages(messages), 200
             else:
-                return GetMessages.Messages(messages), 200
+                return (
+                    GetMessages.Unauthorized("You do not have access to this channel"),
+                    401,
+                )
         else:
-            return (
-                GetMessages.Unauthorized("You do not have access to this channel"),
-                401,
-            )
+            return GetMessages.Failure(f"{channel_snowflake} is invalid"), 400
     else:
         return GetMessages.Unauthorized("Token is invalid"), 401
 
