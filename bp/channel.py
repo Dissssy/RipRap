@@ -23,6 +23,7 @@ from common.db import (
     _get_user_tokens,
     _grant_channel_access,
     _has_access_to_channel,
+    _is_author,
     _is_owner,
 )
 
@@ -110,7 +111,7 @@ async def channel_info(channel_snowflake: str, headers: Primitive.Header.Token):
 
 
 @bp.delete("/<server_snowflake>/<channel_snowflake>")
-@tag(["Channels"])
+@tag(["Channels", "Deletion"])
 @validate_headers(Primitive.Header.Token)
 @validate_request(Primitive.Option.Password)
 @validate_response(Primitive.Error.Unauthorized, 401)
@@ -149,7 +150,7 @@ async def channel_delete(
 
 
 @bp.put("/<channel_snowflake>/messages")
-@tag(["Channels", "Creation"])
+@tag(["Messages", "Creation"])
 @validate_headers(Primitive.Header.Token)
 @validate_request(Primitive.Create.Message)
 @validate_response(Primitive.Message, 200)
@@ -165,10 +166,9 @@ async def channel_create_message(
         if await _has_access_to_channel(app.db, channel_snowflake, snowflake):
             resp = validate_string(data.content, 1, 2000)
             if resp is None:
-                msg = await _create_message(
+                sendmsg = await _create_message(
                     app, channel_snowflake, snowflake, data.content
                 )
-                sendmsg = msg.copy()
                 sendmsg["channel_snowflake"] = channel_snowflake
                 channelusers = await _get_channel_users(app.db, channel_snowflake)
                 for channeluser in channelusers:
@@ -176,9 +176,9 @@ async def channel_create_message(
                     for usertoken in usertokens:
                         if app.ws.get(usertoken, None) is not None:
                             app.ws[usertoken].append({"code": 100, "data": sendmsg})
-                return cast(Primitive.Message, msg)
+                return cast(Primitive.Message, sendmsg), 200
             else:
-                return Primitive.Error.InvalidInput(resp)
+                return Primitive.Error.InvalidInput(resp), 400
         else:
             return (
                 Primitive.Error.Unauthorized("You do not have access to this channel"),
@@ -213,6 +213,62 @@ async def channel_get_messages(
                 else:
                     pass
                     return Primitive.List.Messages(messages), 200
+            else:
+                return (
+                    Primitive.Error.Unauthorized(
+                        "You do not have access to this channel"
+                    ),
+                    401,
+                )
+        else:
+            return (
+                Primitive.Error.InvalidSnowflake(f"{channel_snowflake} is invalid"),
+                400,
+            )
+    else:
+        return Primitive.Error.Unauthorized("Token is invalid"), 401
+
+
+@bp.delete("/<channel_snowflake>/messages/<message_snowflake>")
+@tag(["Messages", "Deletion"])
+@validate_headers(Primitive.Header.Token)
+@validate_response(Primitive.Response.Success, 200)
+@validate_response(Primitive.Error.Unauthorized, 401)
+@validate_response(Primitive.Error.InvalidSnowflake, 400)
+async def delete_message(
+    channel_snowflake: str, message_snowflake: str, headers: Primitive.Header.Token
+):
+    snowflake = await _get_snowflake_from_token(app.db, headers.x_token)
+    if snowflake is not None:
+        if validate_snowflake(channel_snowflake):
+            if await _has_access_to_channel(app.db, channel_snowflake, snowflake):
+                if validate_snowflake(message_snowflake):
+                    message = await _is_author(app.db, snowflake, message_snowflake)
+                    if type(message) is not str:
+                        await app.db.execute(
+                            """DELETE FROM messages WHERE snowflake = :snowflake""",
+                            values={"snowflake": int(message_snowflake)},
+                        )
+                        channelusers = await _get_channel_users(
+                            app.db, channel_snowflake
+                        )
+                        for channeluser in channelusers:
+                            usertokens = await _get_user_tokens(app.db, channeluser)
+                            for usertoken in usertokens:
+                                if app.ws.get(usertoken, None) is not None:
+                                    app.ws[usertoken].append(
+                                        {"code": 300, "data": message}
+                                    )
+                        return Primitive.Response.Success("Message deleted")
+                    else:
+                        return Primitive.Error.Unauthorized(message), 401
+                else:
+                    return (
+                        Primitive.Error.InvalidSnowflake(
+                            f"{message_snowflake} is invalid"
+                        ),
+                        400,
+                    )
             else:
                 return (
                     Primitive.Error.Unauthorized(

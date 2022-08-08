@@ -18,7 +18,6 @@ async def _create_db_connection() -> Database:
 async def _is_ratelimited(
     db: Database, endpoint_id: str, t: int, maxuses: int, snowflake: str
 ):
-    return 0
     await db.execute(
         f"""DELETE FROM ratelimit WHERE apiendpoint = :apiendpoint AND timecalled <= :timecalled""",
         values={"apiendpoint": endpoint_id, "timecalled": math.floor(time()) - t},
@@ -80,10 +79,7 @@ async def _add_user_token(
             "session_name": session_name,
         },
     )
-    return {
-        "token": info[0],
-        "session_name": info[1]
-    }
+    return {"token": info[0], "session_name": info[1]}
 
 
 async def _remove_user_token(db: Database, token: str):
@@ -113,17 +109,27 @@ async def _get_all_tokens(db: Database, snowflake: str):
     return [{"token": x["row"][0], "session_name": x["row"][1]} for x in tokens]
 
 
-async def _delete_user(db: Database, snowflake: str):
-    await db.execute(
-        """DELETE FROM users WHERE snowflake = :snowflake""",
-        values={"snowflake": int(snowflake)},
+async def _delete_user(app: Database, snowflake: str):
+    # await db.execute(
+    #     """DELETE FROM users WHERE snowflake = :snowflake""",
+    #     values={"snowflake": int(snowflake)},
+    # )
+    await app.db.fetch_val(
+        """UPDATE users SET passwordhash = :passwordhash, username = :username, nickname = :nickname, picture = :picture WHERE snowflake = :snowflake""",
+        values={
+            "passwordhash": b"",
+            "username": str(next(app.snowflake_gen)),
+            "nickname": "Deleted User",
+            "picture": "http://cdn.deadlyneurotox.in/sXIAsDHeMkONwg1i",
+            "snowflake": int(snowflake),
+        },
     )
-    sessions = await _get_all_tokens(db, snowflake)
+    sessions = await _get_all_tokens(app.db, snowflake)
     for session in sessions:
-        await _remove_user_token(db, session["token"])
-    await _cleanup(db, "ratelimit", "snowflake", int(snowflake))
-    await _cleanup(db, "server_access", "user_snowflake", int(snowflake))
-    await _cleanup(db, "channel_access", "user_snowflake", int(snowflake))
+        await _remove_user_token(app.db, session["token"])
+    await _cleanup(app.db, "ratelimit", "snowflake", int(snowflake))
+    await _cleanup(app.db, "server_access", "user_snowflake", int(snowflake))
+    await _cleanup(app.db, "channel_access", "user_snowflake", int(snowflake))
 
 
 async def _cleanup(db: Database, table: str, match_value: str, value):
@@ -365,14 +371,15 @@ async def _get_channel_messages(
         else:
             return "Before message does not exist"
     messages = await db.fetch_all(
-        f"""SELECT (snowflake, author_snowflake, content) FROM messages WHERE {beforestr}channel_snowflake = :channel_snowflake ORDER BY snowflake DESC LIMIT {limitval}""",
+        f"""SELECT (snowflake, author_snowflake, channel_snowflake, content) FROM messages WHERE {beforestr}channel_snowflake = :channel_snowflake ORDER BY snowflake DESC LIMIT {limitval}""",
         values=values,
     )
     messageslist = [
         {
             "snowflake": str(x[0][0]),
             "author": await _get_user_info(db, str(x[0][1])),
-            "content": x[0][2],
+            "channel_snowflake": x[0][2],
+            "content": x[0][3],
         }
         for x in messages
     ]
@@ -472,21 +479,50 @@ async def _get_channel_users(db: Database, channel_snowflake: str):
         )
     return [str(x[0]) for x in users]
 
-async def _update_user_info(db: Database, user_snowflake: str, nickname: Optional[str] = None, picture: Optional[str] = None):
+
+async def _update_user_info(
+    db: Database,
+    user_snowflake: str,
+    nickname: Optional[str] = None,
+    picture: Optional[str] = None,
+):
     oldinfo = await _get_user_info(db, user_snowflake)
-    values= {"nickname": oldinfo["nickname"], "picture": oldinfo["picture"], "snowflake": int(user_snowflake)}
+    values = {
+        "nickname": oldinfo["nickname"],
+        "picture": oldinfo["picture"],
+        "snowflake": int(user_snowflake),
+    }
     if nickname is not None:
         values["nickname"] = nickname
     if picture is not None:
         values["picture"] = picture
 
-    
     userinfo = await db.fetch_val(
-        """UPDATE users SET nickname = :nickname, picture = :picture WHERE snowflake = :snowflake RETURNING (snowflake, username, nickname, picture)""", values=values
+        """UPDATE users SET nickname = :nickname, picture = :picture WHERE snowflake = :snowflake RETURNING (snowflake, username, nickname, picture)""",
+        values=values,
     )
     return {
         "snowflake": str(userinfo[0]),
         "username": userinfo[1],
         "nickname": userinfo[2],
-        "picture": userinfo[3]
+        "picture": userinfo[3],
     }
+
+
+async def _is_author(db: Database, user_snowflake: str, message_snowflake: str):
+    message = await db.fetch_one(
+        """SELECT (author_snowflake, channel_snowflake, snowflake, content) FROM messages WHERE snowflake = :snowflake""",
+        values={"snowflake": int(message_snowflake)},
+    )
+    info = message[0]
+    if info is not None:
+        if int(info[0]) == int(user_snowflake):
+            return {
+                "author_snowflake": info[0],
+                "channel_snowflake": info[1],
+                "snowflake": info[2],
+                "content": info[3],
+            }
+        else:
+            return "You are not the author of this message"
+    return "Message does not exist"

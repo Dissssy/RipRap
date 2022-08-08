@@ -108,8 +108,11 @@ heartbeattime = 30
 # 1 is heartbeat
 # 1xx is creation events
 # 100 is message create
-# 2xx is deletion events
-# 200 is message delete
+# 2xx is updat events
+# 200 is be message update
+# 201 is user update
+# 3xx is deletion events
+# 300 is message delete
 
 
 class WebSocketClient:

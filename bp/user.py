@@ -43,10 +43,12 @@ async def get_self(headers: Primitive.Header.Token):
 async def patch_self(data: Primitive.Update.User, headers: Primitive.Header.Token):
     snowflake = await _get_snowflake_from_token(app.db, headers.x_token)
     if snowflake is not None:
-        return cast(
-            Primitive.User,
-            await _update_user_info(app.db, snowflake, data.nickname, data.picture),
+        userinfo = await _update_user_info(
+            app.db, snowflake, data.nickname, data.picture
         )
+        for wssnowflake in app.ws:
+            app.ws[wssnowflake].append({"code": "201", "data": userinfo})
+        return cast(Primitive.User, userinfo)
     else:
         return Primitive.Error.Unauthorized("Token is invalid"), 401
 

@@ -1,32 +1,29 @@
-from dataclasses import dataclass
+from pydantic import BaseModel
 from typing import Optional
 
 
-@dataclass
-class Channel:
+class Channel(BaseModel):
     name: str
     picture: Optional[str]
     snowflake: str
     message_count: int
 
 
-@dataclass
-class User:
+class User(BaseModel):
     snowflake: str
     username: str
     nickname: Optional[str]
     picture: Optional[str]
 
 
-@dataclass
-class Message:
+class Message(BaseModel):
     content: str
     snowflake: str
+    channel_snowflake: str
     author: User
 
 
-@dataclass
-class Server:
+class Server(BaseModel):
     name: str
     picture: Optional[str]
     owner: User
@@ -34,111 +31,93 @@ class Server:
     channels: list[Channel]
 
 
-@dataclass
-class Session:
+class Session(BaseModel):
     token: str
     session_name: str
 
 
 class Error:
-    @dataclass
-    class Unauthorized:
+    class Unauthorized(BaseModel):
         error: str
 
-    @dataclass
-    class InvalidInput:
+    class InvalidInput(BaseModel):
         error: str
 
-    @dataclass
-    class InvalidSnowflake:
+    class InvalidSnowflake(BaseModel):
         error: str
 
-    @dataclass
-    class AlreadyExists:
+    class AlreadyExists(BaseModel):
         error: str
 
-    @dataclass
-    class DoesNotExist:
+    class DoesNotExist(BaseModel):
         error: str
 
-    @dataclass
-    class Ratelimited:
+    class Ratelimited(BaseModel):
         error: str
 
 
 class Header:
-    @dataclass
-    class Token:
+    class Token(BaseModel):
         x_token: str
 
 
 class Response:
-    @dataclass
-    class Success:
+    class Success(BaseModel):
         response: str
 
 
 class Option:
-    @dataclass
-    class MessagesQuery:
+    class MessagesQuery(BaseModel):
         limit: Optional[int] = None
         before: Optional[str] = None
 
-    @dataclass
-    class Password:
+    class Password(BaseModel):
         password: str
 
-    @dataclass
-    class Username:
+    class Username(BaseModel):
         username: str
 
 
 class Create:
-    @dataclass
-    class Channel:
+    class Channel(BaseModel):
         name: str
         picture_url: Optional[str]
 
-    @dataclass
-    class Message:
+    class Message(BaseModel):
         content: str
 
-    @dataclass
-    class Server:
+    class Server(BaseModel):
         name: str
         picture_url: Optional[str]
 
-    @dataclass
-    class User(Option.Username, Option.Password):
+    class User(BaseModel):
         nickname: Optional[str]
         picture: Optional[str]
+        username: str
+        password: str
 
-    @dataclass
-    class Token(Option.Username, Option.Password):
+    class Token(BaseModel):
         session_name: str
+        username: str
+        password: str
 
 
 class List:
-    @dataclass
-    class Messages:
+    class Messages(BaseModel):
         messages: list[Message]
 
-    @dataclass
-    class Servers:
+    class Servers(BaseModel):
         servers: list[Server]
 
-    @dataclass
-    class Sessions:
+    class Sessions(BaseModel):
         sessions: list[Session]
 
 
 class Update:
-    @dataclass
-    class User:
+    class User(BaseModel):
         nickname: Optional[str]
         picture: Optional[str]
 
-    @dataclass
-    class Password:
+    class Password(BaseModel):
         password: str
         new_password: str

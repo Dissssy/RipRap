@@ -157,7 +157,10 @@ async def auth_remove(data: Primitive.Option.Password, headers: Primitive.Header
             return Primitive.Error.DoesNotExist("User does not exist"), 404
 
         if bcrypt.checkpw(codecs.encode(data.password, "utf-8"), zlib.decompress(pw)):
-            await _delete_user(app.db, snowflake)
+            await _delete_user(app, snowflake)
+            userinfo = await _fetch_user_data(snowflake)
+            for wssnowflake in app.ws:
+                app.ws[wssnowflake].append({"code": "201", "data": userinfo})
             return (
                 Primitive.Response.Success("Dont let the door hit you on the way out"),
                 201,
