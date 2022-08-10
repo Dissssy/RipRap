@@ -30,7 +30,10 @@ bp = Blueprint("server", __name__)
 async def server_userlist(headers: Primitive.Header.Token):
     snowflake = await _get_snowflake_from_token(app.db, headers.x_token)
     if snowflake is not None:
-        return Primitive.List.Servers(await _get_user_servers(app.db, snowflake)), 200
+        return (
+            Primitive.List.Servers(servers=await _get_user_servers(app.db, snowflake)),
+            200,
+        )
     else:
         return Primitive.Error.Unauthorized("Token is invalid"), 401
 

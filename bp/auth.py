@@ -53,7 +53,15 @@ async def auth_register(data: Primitive.Create.User):
         )
     except Exception as e:
         return Primitive.Error.AlreadyExists(f"""User already exists"""), 409
-    return Primitive.User(str(userinfo[0]), userinfo[1], userinfo[2], userinfo[3]), 201
+    return (
+        Primitive.User(
+            snowflake=str(userinfo[0]),
+            username=userinfo[1],
+            nickname=userinfo[2],
+            picture=userinfo[3],
+        ),
+        201,
+    )
 
 
 @bp.post("/login")

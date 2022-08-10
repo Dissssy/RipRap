@@ -212,7 +212,7 @@ async def channel_get_messages(
                     return Primitive.Error.InvalidInput(messages), 400
                 else:
                     pass
-                    return Primitive.List.Messages(messages), 200
+                    return Primitive.List.Messages(messages=messages), 200
             else:
                 return (
                     Primitive.Error.Unauthorized(
