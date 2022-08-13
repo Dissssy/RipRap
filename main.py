@@ -1,31 +1,27 @@
-from dataclasses import dataclass
 import sys
 from typing import Optional, TypedDict
+import asyncpg
 
 from quart_cors import cors
 
 sys.path.append(".")
 
 import asyncio
-import zlib
 from quart import Quart, websocket
 from quart_schema import (
     QuartSchema,
-    validate_headers,
-    validate_response,
 )
-from snowflake import SnowflakeGenerator
-import json
-import uuid
+
+import common.primitive as Primitive
 
 import config
 
-import common.primitive as Primitive
-from common.db import _create_db_connection, _get_snowflake_from_token
+from common.db import RIPRAPDatabase
 
 import bp.auth, bp.server, bp.channel, bp.user
 
 app = Quart(__name__)
+app.debug=True
 QuartSchema(
     app,
     swagger_ui_path="/api/docs",
@@ -44,6 +40,7 @@ app.config.update(
     }
 )
 app = cors(app, allow_origin="*")
+app.db: RIPRAPDatabase = RIPRAPDatabase(config.DATABASE_URL)
 
 
 @app.route("/api", strict_slashes=False)
@@ -60,12 +57,12 @@ def register_blueprints(app: Quart):
 register_blueprints(app)
 
 
-def encode_json(thing) -> bytes:
-    return zlib.compress(bytes(json.dumps(thing), "utf-8"))
+# def encode_json(thing) -> bytes:
+#     return zlib.compress(bytes(json.dumps(thing), "utf-8"))
 
 
-def decode_json(nibble: bytes):
-    return json.loads(zlib.decompress(nibble).decode("utf-8"))
+# def decode_json(nibble: bytes):
+#     return json.loads(zlib.decompress(nibble).decode("utf-8"))
 
 
 # @app.route("/")
@@ -76,11 +73,12 @@ def decode_json(nibble: bytes):
 
 @app.before_serving
 async def startup() -> None:
-    app.db = await _create_db_connection()
-    app.snowflake_gen = SnowflakeGenerator(0)
-    app.uuid = uuid.uuid1
+    app.db = RIPRAPDatabase(config.DATABASE_URL)
+    await app.db._connect()
     # set up as {"snowflake": [ list of websockets ]}
     app.ws = {}
+    app.cache = {}
+    await app.db._cleanup_db()
 
 
 @app.after_serving
@@ -91,6 +89,14 @@ async def shutdown() -> None:
 class WebSocket:
     Response = TypedDict("websocket_tx", {"code": int, "data": Optional[dict]})
 
+
+@app.errorhandler(Primitive.Error)
+async def handle_notexist_session(error: Primitive.Error):
+    return {"error": error.args[0]}, error.args[1]
+
+@app.errorhandler(asyncpg.exceptions.UniqueViolationError)
+async def handle_unique_violation(error: asyncpg.exceptions.UniqueViolationError):
+    return {"error": str(error)}, 400
 
 # @app.websocket("/ws")
 # async def ws():
@@ -166,9 +172,7 @@ class WebSocketClient:
                         if penis is not None:
                             self.token = penis.get("token", None)
                             if self.token is not None:
-                                snowflake = await _get_snowflake_from_token(
-                                    app.db, self.token
-                                )
+                                snowflake = await app.db.snowflake_get(token=self.token)
                                 if snowflake is not None:
                                     app.ws[self.token] = []
                                 else:
@@ -244,14 +248,16 @@ async def ws():
 @app.cli.command("init_db")
 def init_db() -> None:
     async def _inner() -> None:
-        db = await _create_db_connection()
+        app.db = RIPRAPDatabase(config.DATABASE_URL)
+        await app.db._connect()
         async with await app.open_resource("schema.sql", "r") as file:
             for query in (await file.read()).split(";"):
-                await db.fetch_val(f"{query};")
+                await app.db._db.fetch_val(f"{query};")
 
     loop = asyncio.get_event_loop()
     loop.run_until_complete(_inner())
 
 
 if __name__ == "__main__":
-    app.run("0.0.0.0", 14500)
+    # app.run("0.0.0.0", 14500)
+    app.run()

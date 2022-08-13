@@ -8,72 +8,38 @@ from quart_schema import (
     validate_request,
     validate_response,
 )
-from common.db import (
-    _get_snowflake_from_token,
-    _get_user_info,
-    _is_user,
-    _update_user_info,
-)
+
 
 import common.primitive as Primitive
-from common.utils import validate_snowflake
+from common.utils import auth, validate_snowflake
 
 bp = Blueprint("user", __name__)
 
 
 @bp.get("/")
 @tag(["User", "Info"])
-@validate_headers(Primitive.Header.Token)
 @validate_response(Primitive.User, 200)
-@validate_response(Primitive.Error.Unauthorized, 401)
-async def get_self(headers: Primitive.Header.Token):
-    snowflake = await _get_snowflake_from_token(app.db, headers.x_token)
-    if snowflake is not None:
-        return cast(Primitive.User, await _get_user_info(app.db, snowflake))
-    else:
-        return Primitive.Error.Unauthorized("Token is invalid"), 401
-
+@auth()
+async def get_self(session: Primitive.Session) -> Primitive.User:
+    """Get information about the current user."""
+    return await app.db.user_get(session.snowflake)
 
 @bp.patch("/")
 @tag(["User", "Update"])
-@validate_headers(Primitive.Header.Token)
+@auth()
 @validate_request(Primitive.Update.User)
 @validate_response(Primitive.User, 200)
-@validate_response(Primitive.Error.Unauthorized, 401)
-async def patch_self(data: Primitive.Update.User, headers: Primitive.Header.Token):
-    snowflake = await _get_snowflake_from_token(app.db, headers.x_token)
-    if snowflake is not None:
-        userinfo = await _update_user_info(
-            app.db, snowflake, data.nickname, data.picture
-        )
-        for wssnowflake in app.ws:
-            app.ws[wssnowflake].append({"code": "201", "data": userinfo})
-        return cast(Primitive.User, userinfo)
-    else:
-        return Primitive.Error.Unauthorized("Token is invalid"), 401
-
+async def update_self(session: Primitive.Session, update: Primitive.Update.User) -> Primitive.User:
+    """Update the current user."""
+    return await app.db.user_set(session.snowflake, nickname=update.nickname, picture=update.picture)
 
 @bp.get("/<user_snowflake>")
 @tag(["User", "Info"])
-@validate_headers(Primitive.Header.Token)
+@auth()
 @validate_response(Primitive.User, 200)
-@validate_response(Primitive.Error.Unauthorized, 401)
-@validate_response(Primitive.Error.InvalidInput, 400)
-@validate_response(Primitive.Error.DoesNotExist, 404)
-async def get_other(user_snowflake: str, headers: Primitive.Header.Token):
-    snowflake = await _get_snowflake_from_token(app.db, headers.x_token)
-    if snowflake is not None:
-        if validate_snowflake(user_snowflake):
-            user = await _get_user_info(app.db, user_snowflake)
-            if user is not None:
-                return cast(Primitive.User, user)
-            else:
-                return Primitive.Error.DoesNotExist("User does not exist"), 404
-        else:
-            return Primitive.Error.InvalidInput("Invalid snowflake"), 400
-    else:
-        return Primitive.Error.Unauthorized("Token is invalid"), 401
-
+async def get_user(session: Primitive.Session, user_snowflake: str) -> Primitive.User:
+    """Get information about a user."""
+    return await app.db.user_get(await app.db.snowflake_get(user_snowflake))
 
 # @bp.put("/<user_snowflake>/add")
 # @tag(["User"])
