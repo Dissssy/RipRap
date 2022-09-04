@@ -12,4 +12,5 @@ schema.api
 test.png
 test.py
 oldschema
+common/db.py.old
 schema.prisma
