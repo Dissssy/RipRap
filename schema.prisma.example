@@ -1,7 +1,7 @@
 // database
 datasource db {
-  provider = "postgresql"
-  url      = "postgresql://postgres:disclone@localhost:5432/disclone"
+  provider = "database type (i used postgresql, compatibility with other databases is not guaranteed)"
+  url      = "database url including credentials"
 }
 
 // generator

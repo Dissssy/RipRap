@@ -12,3 +12,4 @@ schema.api
 test.png
 test.py
 oldschema
+schema.prisma
