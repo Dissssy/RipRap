@@ -1,108 +1,194 @@
+import base64
 import codecs
 import zlib
 import bcrypt
-from quart import Blueprint
+from quart import Blueprint, render_template
 from quart import current_app as app
 
 
 from quart_schema import tag, validate_headers, validate_request, validate_response
 from common.db import RIPRAPDatabase
 
-import common.primitive as Primitive
-from common.utils import auth, ratelimit, validate_string
+from common.primitive import (
+    User,
+    Create,
+    Response,
+    Session,
+    Error,
+    Header,
+    Option,
+    List,
+)
+from common.utils import auth, benchmark, ratelimit, validate_string
 
 bp = Blueprint("auth", __name__)
 
+# PUT /register
+#     201 Created - User created - returns user object
+#     400 Bad Request - User already exists
+#     400 Bad Request - Input error
+#     500 Internal Server Error
+
 
 @bp.put("/register")
-@tag(["Auth", "Creation"])
-@validate_request(Primitive.Create.User)
-@validate_response(Primitive.User, 201)
-@validate_response(Primitive.Response.InputError, 400)
-async def auth_register(data: Primitive.Create.User):
-    r = validate_string(data.username, minlength=3, maxlength=32)
-    if r is not None:
-        return Primitive.Response.InputError(response=r), 400
-    r = validate_string(data.password, minlength=8, maxlength=128)
-    if r is not None:
-        return Primitive.Response.InputError(response=r), 400
-    return (
-        await app.db.user_create(
-            data.username, data.nickname, data.picture, data.password
-        )
-    ).dict()
+@tag(["Auth", "Creation", "User"])
+@benchmark()
+@validate_request(Create.User)
+@validate_response(User, 201)
+async def auth_register(data: Create.User) -> User:
+    """Register a new user."""
+    validate_string(data.username, minlength=1, maxlength=32)
+    validate_string(data.password, minlength=8, maxlength=64)
 
-
-@bp.post("/login")
-@tag(["Auth", "Creation"])
-@validate_request(Primitive.Create.Session)
-@validate_response(Primitive.Session, 201)
-async def auth_login(data: Primitive.Create.Session):
-    #     ratelimit = 300
-    #     ratecount = 1
-    r = validate_string(data.username, minlength=3)
-    if r is not None:
-        raise Primitive.Error(r, 400)
-    r = validate_string(data.password)
-    if r is not None:
-        raise Primitive.Error(r, 400)
-    r = validate_string(data.session_name, minlength=1, maxlength=100)
-    if r is not None:
-        raise Primitive.Error(r, 400)
-    d: Primitive.User = await app.db.user_get(username=data.username, internal=True)
-
-    if bcrypt.checkpw(
-        codecs.encode(data.password, "utf-8"), zlib.decompress(d.passwordhash)
-    ):
-        return await app.db.session_create(d.snowflake, data.session_name), 201
-    raise Primitive.Error("Incorrect password", 401)
-
-
-@bp.delete("/logout")
-@tag(["Auth", "Deletion"])
-@validate_response(Primitive.Response.Success, 201)
-@validate_headers(Primitive.Header.Token)
-async def auth_logout(headers: Primitive.Header.Token):
-    response = await app.db.session_remove(headers.x_token)
-    return (
-        Primitive.Response.Success(
-            response=f"Successfully invalidated token for session {response}"
-        ),
-        201,
+    user = await app.db.user_set(
+        name=data.username, password=data.password, email=data.email
     )
+    return user
 
 
-@bp.get("/sessions")
-@tag(["Auth", "Info"])
+# PUT /session (LOGIN)
+#     201 Created - User logged in - returns session object
+#     404 Not Found - User not found
+#     401 Unauthorized - Wrong input
+#     500 Internal Server Error
+
+
+@bp.put("/session")
+@tag(["Auth", "Creation", "Session"])
+@benchmark()
+@validate_request(Create.Session)
+@validate_response(Session, 201)
+async def auth_session(data: Create.Session) -> Session:
+    """Create a new session for a user."""
+    validate_string(data.session_name, minlength=1, maxlength=128)
+    validate_string(data.password, minlength=8, maxlength=64)
+    app.db._verify_email(data.email)
+
+    session = await app.db.session_set(
+        session_name=data.session_name,
+        password=data.password,
+        email=data.email,
+    )
+    return session
+
+
+# DELETE /session (LOGOUT)
+#     200 OK - User logged out - returns nothing
+#     401 Unauthorized - Token invalid
+#     500 Internal Server Error
+
+
+@bp.delete("/session")
+@tag(["Auth", "Deletion", "Session", "Authed"])
+@benchmark()
 @auth()
-@validate_response(Primitive.List.Sessions, 200)
-async def auth_sessions(session: Primitive.Session):
-    return (
-        await app.db.session_list(session.snowflake),
-        200,
-    )
+@validate_response(Response.Success, 200)
+async def auth_session_delete(session: Session) -> Response.Success:
+    """Delete a session."""
+    await app.db.session_set(token=session.token)
+    return Response.Success(response="Successfully invalidated session.")
 
 
-@bp.delete("/remove_account_yes_im_serous_wa_wa_we_wa")
-@tag(["Auth", "Deletion"])
-@validate_request(Primitive.Option.Password)
-@validate_response(Primitive.Response.Success, 204)
+# GET /session (list all)
+#     200 OK - Returns list of all sessions
+#     401 Unauthorized - Token invalid
+#     500 Internal Server Error
+
+
+@bp.get("/session")
+@tag(["Auth", "Info", "Session", "Authed"])
+@benchmark()
 @auth()
-async def auth_remove(data: Primitive.Option.Password, session: Primitive.Session):
-    d: Primitive.User = await app.db.user_get(
-        snowflake=session.snowflake, internal=True
+@validate_response(List.Sessions, 200)
+async def auth_session_list(session: Session) -> List.Sessions:
+    """List all sessions."""
+    return List.Sessions(
+        sessions=await app.db.session_get(token=session.token, listall=True)
     )
-    if bcrypt.checkpw(
-        codecs.encode(data.password, "utf-8"), zlib.decompress(d.passwordhash)
-    ):
-        await app.db.user_remove(d)
-        for wssnowflake in app.ws:
-            app.ws[wssnowflake].append({"code": "201", "data": d})
-        return (
-            Primitive.Response.Success(
-                response="Dont let the door hit you on the way out"
-            ),
-            201,
-        )
-    else:
-        raise Primitive.Error("Incorrect password", 401)
+
+
+# @bp.put("/register")
+# @tag(["Auth", "Creation"])
+# @validate_request(Create.User)
+# @validate_response(User, 201)
+# @validate_response(Response.InputError, 400)
+# async def auth_register(data: Create.User):
+#     r = validate_string(data.username, minlength=3, maxlength=32)
+#     if r is not None:
+#         return Response.InputError(response=r), 400
+#     r = validate_string(data.password, minlength=8, maxlength=128)
+#     if r is not None:
+#         return Response.InputError(response=r), 400
+#     return await app.db.user_set(
+#         name=data.username, password=data.password, email=data.email
+#     )
+
+
+# # @bp.get("/usercard")
+# # @tag(["Auth", "Helper"])
+# # @auth()
+# # async def auth_image(session: Session):
+# #     return await render_template(
+# #         "/usercard.html",
+# #         image=session.user.picture,
+# #         snowflake=session.user.snowflake,
+# #         name=session.user.name,
+# #         email=session.user.email,
+# #         friends=len(session.user.friends),
+# #         servers=len(session.user.servers),
+# #     )
+
+
+# @bp.post("/login")
+# @tag(["Auth", "Creation"])
+# @validate_request(Create.Session)
+# @validate_response(Session, 201)
+# async def auth_login(data: Create.Session):
+#     r = validate_string(data.session_name, minlength=1, maxlength=100)
+#     if r is not None:
+#         raise Error(r, 400)
+#     return await app.db.session_set(
+#         email=data.email, password=data.password, session_name=data.session_name
+#     )
+
+
+# @bp.delete("/logout")
+# @tag(["Auth", "Deletion"])
+# @validate_response(Response.Success, 201)
+# @validate_headers(Header.Token)
+# async def auth_logout(headers: Header.Token):
+#     response: Session = await app.db.session_set(token=headers.x_token)
+#     return (
+#         Response.Success(
+#             response=f"Successfully invalidated token for session {response.session_name}"
+#         ),
+#         201,
+#     )
+
+
+# @bp.get("/sessions")
+# @tag(["Auth", "Info"])
+# @auth()
+# @validate_response(List.Sessions, 200)
+# async def auth_sessions(session: Session):
+#     return (
+#         await app.db.session_get(session.token, listall=True),
+#         200,
+#     )
+
+
+# @bp.delete("/account")
+# @tag(["Auth", "Deletion"])
+# @validate_request(Option.Password)
+# @validate_response(Response.Success, 204)
+# @auth()
+# async def auth_remove(data: Option.Password, session: Session):
+#     d = await app.db.user_set(
+#         snowflake=session.user.snowflake, password=data.password, delete=True
+#     )
+#     for wssnowflake in app.ws:
+#         app.ws[wssnowflake].append({"code": "201", "data": d})
+#     return (
+#         Response.Success(response="Dont let the door hit you on the way out"),
+#         201,
+#     )

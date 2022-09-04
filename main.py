@@ -1,8 +1,12 @@
 import sys
-from typing import Optional, TypedDict
+from typing import Any, Optional, TypedDict
 import asyncpg
+from colorama import Fore
+import prisma
 
 from quart_cors import cors
+import quart_schema
+import globals
 
 sys.path.append(".")
 
@@ -20,8 +24,10 @@ from common.db import RIPRAPDatabase
 
 import bp.auth, bp.server, bp.channel, bp.user
 
+globals.initialize()
+
 app = Quart(__name__)
-app.debug=True
+# app.debug = True
 QuartSchema(
     app,
     swagger_ui_path="/api/docs",
@@ -49,7 +55,7 @@ async def server_info():
 
 
 def register_blueprints(app: Quart):
-    blueprints = [bp.auth.bp, bp.server.bp, bp.channel.bp, bp.user.bp]
+    blueprints = [bp.auth.bp, bp.user.bp, bp.server.bp, bp.channel.bp]
     for blueprint in blueprints:
         app.register_blueprint(blueprint, url_prefix=f"/api/{blueprint.name}")
 
@@ -78,7 +84,12 @@ async def startup() -> None:
     # set up as {"snowflake": [ list of websockets ]}
     app.ws = {}
     app.cache = {}
-    await app.db._cleanup_db()
+    app.loader = __loader__.name
+    # app.loader = "benchmark"
+    # app.websocket_handlers = utils.websocket_handlers
+    # await app.db._cleanup_db()
+    if app.loader == "__main__":
+        await test()
 
 
 @app.after_serving
@@ -94,9 +105,54 @@ class WebSocket:
 async def handle_notexist_session(error: Primitive.Error):
     return {"error": error.args[0]}, error.args[1]
 
+
 @app.errorhandler(asyncpg.exceptions.UniqueViolationError)
 async def handle_unique_violation(error: asyncpg.exceptions.UniqueViolationError):
     return {"error": str(error)}, 400
+
+
+@app.errorhandler(prisma.errors.UniqueViolationError)
+async def handle_unique_violation(error: prisma.errors.UniqueViolationError):
+    return {"error": str(error)}, 400
+
+
+@app.errorhandler(quart_schema.validation.ResponseSchemaValidationError)
+async def handle_schema_validation(
+    error: quart_schema.validation.ResponseSchemaValidationError,
+):
+    return {"error": str(error.__dict__) + ", tell @Dissy#2112 he's an idiot"}, 400
+
+
+@app.errorhandler(ConnectionAbortedError)
+async def handle_connection_aborted(error: ConnectionAbortedError):
+    return {"error": str(error)}, 400
+
+
+# def recursivedir(class_, depth=0):
+#     outstring = ""
+#     if isinstance(class_, str):
+#         return class_
+#     if hasattr(class_, "__name__"):
+#         return class_.__name__
+#     if depth > 25:
+#         return "..."
+#     for attr in dir(class_):
+#         outstring += f"{attr}: [{recursivedir(getattr(class_, attr), depth + 1)}], "
+#     #     if not attr.startswith("__") and not attr.startswith("_"):
+#     #         if getattr(getattr(class_, attr), "__str__") is not None:
+#     #             if not getattr(class_, attr).__str__().startswith("<"):
+#     #                 outstring += f"{attr}: {getattr(class_, attr).__str__()}, "
+#     #             else:
+#     #                 outstring += (
+#     #                     f"{attr}: [{recursivedir(getattr(class_, attr), depth + 1)}], "
+#     #                 )
+#     #         else:
+#     #             outstring += (
+#     #                 f"{attr}: [{recursivedir(getattr(class_, attr), depth + 1)}], "
+#     #             )
+#     print(outstring)
+#     return outstring
+
 
 # @app.websocket("/ws")
 # async def ws():
@@ -119,6 +175,11 @@ heartbeattime = 30
 # 201 is user update
 # 3xx is deletion events
 # 300 is message delete
+
+# x00 is message
+# x01 is user
+# x02 is server
+# x03 is channel
 
 
 class WebSocketClient:
@@ -163,22 +224,45 @@ class WebSocketClient:
     async def RX(self):
         while not self.error:
             try:
-                data = await websocket.receive_json()
+                data: dict[str, str | dict] = await websocket.receive_json()
                 match data.get("code", None):
                     case 1:
                         self.lasthb = None
                     case 2:
-                        penis = data.get("data", None)
-                        if penis is not None:
-                            self.token = penis.get("token", None)
+                        thisdata = data.get("data", None)
+                        if thisdata is not None:
+                            self.token = thisdata.get("token", None)
                             if self.token is not None:
-                                snowflake = await app.db.snowflake_get(token=self.token)
-                                if snowflake is not None:
+                                session = app.db.session_get(self.token)
+                                if session is not None:
                                     app.ws[self.token] = []
                                 else:
                                     print(self.token)
                     case _:
-                        print(data)
+                        thisdata = data.get("data", None)
+                        if thisdata is not None:
+                            if self.token is not None:
+                                session = app.db.session_get(self.token)
+                                if session is not None:
+                                    if data["code"] in globals.websocket_handlers:
+                                        try:
+                                            app.ws[self.token].append(
+                                                {
+                                                    "code": data["code"],
+                                                    "data": await globals.websocket_handlers[
+                                                        data["code"]
+                                                    ](
+                                                        session, **thisdata
+                                                    ),
+                                                }
+                                            )
+                                        except Exception as e:
+                                            app.ws[self.token].append(
+                                                {"code": -1, "data": {"Error": str(e)}}
+                                            )
+                                else:
+                                    print(self.token)
+
             except Exception as e:
                 print(e)
                 if self.token is not None:
@@ -245,19 +329,170 @@ async def ws():
     #     )
 
 
-@app.cli.command("init_db")
-def init_db() -> None:
-    async def _inner() -> None:
-        app.db = RIPRAPDatabase(config.DATABASE_URL)
-        await app.db._connect()
-        async with await app.open_resource("schema.sql", "r") as file:
-            for query in (await file.read()).split(";"):
-                await app.db._db.fetch_val(f"{query};")
+async def test():
+    print(Fore.BLUE + "Cleaning up database")
+    await app.db._db.user.delete(where={"email": "test@test.test"})
+    await app.db._db.user.delete(where={"email": "test2@test2.test2"})
+    print(Fore.BLUE + "Beginning tests")
+    nocachestring = Fore.YELLOW + "NOCACHE         | "
+    failure = False
+    try:
+        await app.db.user_set(name="test", password="test", email="test")
+    except:
+        failure = True
+    assert failure is True
+    print(Fore.BLUE + "Email failure test passed")
+    testsetuser = await app.db.user_set(
+        name="test", password="test", email="test@test.test"
+    )
+    print(Fore.BLUE + "User set test passed")
+    assert (
+        await app.db.user_get(snowflake=testsetuser.snowflake)
+    ).snowflake == testsetuser.snowflake
+    print(Fore.BLUE + "User gotten from snowflake")
+    assert (
+        await app.db.user_get(email="test@test.test")
+    ).snowflake == testsetuser.snowflake
+    print(Fore.BLUE + "User gotten from email")
+    assert (
+        await app.db.user_set(
+            snowflake=testsetuser.snowflake,
+            name="test2",
+            email="test2@test2.test2",
+            password="test",
+            newpassword="test2",
+        )
+    ).snowflake == testsetuser.snowflake
+    print(Fore.BLUE + "User update test passed")
+    await app.db.user_get(snowflake=testsetuser.snowflake)
+    assert (await app.db.user_get(snowflake=testsetuser.snowflake)).name == "test2"
+    print(Fore.BLUE + "User name update test passed")
+    session = await app.db.session_set(
+        email="test2@test2.test2", session_name="test_session", password="test2"
+    )
+    assert session.user is not None
+    print(Fore.BLUE + "User exists within Session test passed")
+    session = await app.db.session_get(token=session.token)
+    assert session.user is not None
+    print(Fore.BLUE + "User exists within gotten Session test passed")
+    server = await app.db.server_set(user=testsetuser, name="test")
+    assert server.name == "test"
+    print(Fore.BLUE + "Server set test passed")
+    assert server.owner.snowflake == testsetuser.snowflake
+    print(Fore.BLUE + "Server owner test passed")
+    assert server.members[0].snowflake == testsetuser.snowflake
+    print(Fore.BLUE + "Server member test passed")
+    server = await app.db.server_set(
+        snowflake=server.snowflake, name="test2", user=testsetuser
+    )
+    assert server.name == "test2"
+    print(Fore.BLUE + "Server update test passed")
+    channel = await app.db.channel_set(user=testsetuser, name="test", server=server)
+    assert channel.name == "test"
+    print(Fore.BLUE + "Channel set test passed")
+    # await asyncio.sleep(1)
+    server = await app.db.server_get(snowflake=server.snowflake, user=testsetuser)
+    server = await app.db.server_get(snowflake=server.snowflake, user=testsetuser)
+    assert server.channels[0].snowflake == channel.snowflake
+    print(Fore.BLUE + "Channel get from server test passed")
+    channel = await app.db.channel_set(
+        user=testsetuser, snowflake=channel.snowflake, name="test2", server=server
+    )
+    assert channel.name == "test2"
+    print(Fore.BLUE + "Channel update test passed")
+    message = await app.db.message_set(
+        channel=channel, user=testsetuser, content="test"
+    )
+    assert message.content == "test"
+    print(Fore.BLUE + "Message set test passed")
+    message = (await app.db.message_get(channel=channel))[0]
+    assert message.content == "test"
+    print(Fore.BLUE + "Message get test passed")
+    message = await app.db.message_set(
+        channel=channel, snowflake=message.snowflake, content="test2", user=testsetuser
+    )
+    assert message.content == "test2"
+    print(Fore.BLUE + "Message edit test passed")
+    # await asyncio.sleep(1)
+    messages = await app.db.message_get(channel=channel)
+    messages = await app.db.message_get(channel=channel)
+    assert messages[0].content == "test2"
+    print(Fore.BLUE + "Message get edited test passed")
+    assert len(messages) == 1
+    print(Fore.BLUE + "Message get all test passed")
+    await app.db.message_set(
+        channel=channel, snowflake=message.snowflake, delete=True, user=testsetuser
+    )
+    messages = await app.db.message_get(channel=channel)
+    assert len(messages) == 0
+    print(Fore.BLUE + "Message delete test passed")
 
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(_inner())
+    for i in range(0, 11):
+        await app.db.message_set(channel=channel, user=testsetuser, content=str(i))
+    messages = await app.db.message_get(channel=channel)
+    assert len(messages) == 10
+    print(Fore.BLUE + "Message get 10 test passed")
+    channel = await app.db.channel_get(
+        channel_snowflake=channel.snowflake, user=testsetuser
+    )
+    channel = await app.db.channel_get(
+        channel_snowflake=channel.snowflake, user=testsetuser
+    )
+    assert channel.message_count == 11
+    print(Fore.BLUE + "Channel message count test passed")
+
+    oldchannel = channel.snowflake
+    channel = await app.db.channel_set(
+        user=testsetuser, snowflake=oldchannel, delete=True, server=server
+    )
+    assert channel is None
+    print(Fore.BLUE + "Channel delete test passed")
+    failure = False
+    try:
+        await app.db.channel_get(snowflake=oldchannel, user=testsetuser)
+    except:
+        failure = True
+    assert failure is True
+    print(Fore.BLUE + "Channel was deleted test passed")
+    oldsnowflake = server.snowflake
+    server = await app.db.server_set(
+        snowflake=server.snowflake, delete=True, user=testsetuser
+    )
+    assert server is None
+    print(Fore.BLUE + "Server delete test passed")
+    failure = False
+    try:
+        await app.db.server_get(snowflake=oldsnowflake, user=testsetuser)
+    except:
+        failure = True
+    assert failure is True
+    print(Fore.BLUE + "Server was deleted test passed")
+    assert (
+        await app.db.user_set(
+            snowflake=testsetuser.snowflake, delete=True, password="test2"
+        )
+    ).email != "test2@test2.test2"
+    print(Fore.BLUE + "User delete test passed")
+    assert (await app.db.user_get(snowflake=testsetuser.snowflake)) is not None
+    print(Fore.BLUE + "User was deleted then recreated test passed")
+
+    print(Fore.GREEN + "All tests passed")
+    await app.db._db.user.delete(where={"snowflake": testsetuser.snowflake})
+    print(Fore.GREEN + "Test user was cleaned up")
+    # print(app.cache)
+
+
+# @app.cli.command()
+# def test() -> None:
+#     async def _inner() -> None:
+#         app.db = RIPRAPDatabase(config.DATABASE_URL)
+#         await app.db._connect()
+
+
+#     loop = asyncio.get_event_loop()
+#     loop.run_until_complete(_inner())
 
 
 if __name__ == "__main__":
     # app.run("0.0.0.0", 14500)
-    app.run()
+    app.run(use_reloader=False)

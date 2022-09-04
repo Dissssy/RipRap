@@ -8,3 +8,7 @@ config.py
 trash/
 scripts/
 todo
+schema.api
+test.png
+test.py
+oldschema
