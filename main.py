@@ -85,7 +85,7 @@ async def startup() -> None:
     app.ws = {}
     app.cache = {}
     app.loader = __loader__.name
-    # app.loader = "benchmark"
+    app.loader = "benchmark"
     # app.websocket_handlers = utils.websocket_handlers
     # await app.db._cleanup_db()
     if app.loader == "__main__":
