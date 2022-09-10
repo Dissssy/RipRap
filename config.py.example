@@ -1,4 +1,5 @@
 # The URL to your database.
+# NOTE: This is in prisma.schema now
 DATABASE_URL = "postgresql://postgres:mycoolpassword@host/workingtitle"
 
 # The config for your SMTP server.
