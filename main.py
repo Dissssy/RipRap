@@ -1,4 +1,6 @@
+import datetime
 import sys
+import time
 from typing import Any, Optional, TypedDict
 import asyncpg
 from colorama import Fore
@@ -22,7 +24,7 @@ import config
 
 from common.db import RIPRAPDatabase
 
-import bp.auth, bp.server, bp.channel, bp.user
+import bp.auth, bp.server, bp.channel, bp.user, bp.message
 
 globals.initialize()
 
@@ -55,7 +57,7 @@ async def server_info():
 
 
 def register_blueprints(app: Quart):
-    blueprints = [bp.auth.bp, bp.user.bp, bp.server.bp, bp.channel.bp]
+    blueprints = [bp.auth.bp, bp.user.bp, bp.server.bp, bp.channel.bp, bp.message.bp]
     for blueprint in blueprints:
         app.register_blueprint(blueprint, url_prefix=f"/api/{blueprint.name}")
 
@@ -85,7 +87,7 @@ async def startup() -> None:
     app.ws = {}
     app.cache = {}
     app.loader = __loader__.name
-    app.loader = "benchmark"
+    # app.loader = "benchmark"
     # app.websocket_handlers = utils.websocket_handlers
     # await app.db._cleanup_db()
     if app.loader == "__main__":
@@ -188,7 +190,7 @@ class WebSocketClient:
         self.lasthb = None
         self.missed = 0
         self.error = False
-        self.token = None
+        self.identifier = None
 
     async def TX(self):
         i = 0
@@ -203,21 +205,24 @@ class WebSocketClient:
                             raise asyncio.CancelledError
                     else:
                         self.missed = 0
+                    print(datetime.datetime.now().strftime(r"%H:%M:%S.%f"), " TX")
                     await websocket.send_json(
                         WebSocket.Response({"code": 1, "data": {"hb": self.hbcount}})
                     )
                     self.lasthb = self.hbcount
                     self.hbcount += 1
 
-                if self.token is not None:
-                    while len(app.ws[self.token]) > 0:
+                if self.identifier is not None:
+                    while len(app.ws[self.identifier]) > 0:
+                        print(datetime.datetime.now().strftime(r"%H:%M:%S.%f"), " TX")
                         await websocket.send_json(
-                            WebSocket.Response(app.ws[self.token].pop(0))
+                            WebSocket.Response(app.ws[self.identifier].pop(0))
                         )
+
             except Exception as e:
                 print(e)
-                if self.token is not None:
-                    app.ws.pop(self.token)
+                if self.identifier is not None:
+                    app.ws.pop(self.identifier)
                 self.error = True
                 raise
 
@@ -225,28 +230,35 @@ class WebSocketClient:
         while not self.error:
             try:
                 data: dict[str, str | dict] = await websocket.receive_json()
+                print(datetime.datetime.now().strftime(r"%H:%M:%S.%f"), " RX")
                 match data.get("code", None):
                     case 1:
                         self.lasthb = None
                     case 2:
                         thisdata = data.get("data", None)
                         if thisdata is not None:
-                            self.token = thisdata.get("token", None)
-                            if self.token is not None:
-                                session = app.db.session_get(self.token)
+                            if thisdata.get("token", None) is not None:
+                                session = await app.db.session_get(
+                                    token=thisdata.get("token", None)
+                                )
                                 if session is not None:
-                                    app.ws[self.token] = []
+                                    self.identifier = (
+                                        str(session.user.snowflake)
+                                        + ":"
+                                        + str(next(app.db.snowflake_gen))
+                                    )
+                                    app.ws[self.identifier] = []
                                 else:
-                                    print(self.token)
+                                    print(self.identifier)
                     case _:
                         thisdata = data.get("data", None)
                         if thisdata is not None:
-                            if self.token is not None:
-                                session = app.db.session_get(self.token)
+                            if self.identifier is not None:
+                                session = app.db.session_get(self.identifier)
                                 if session is not None:
                                     if data["code"] in globals.websocket_handlers:
                                         try:
-                                            app.ws[self.token].append(
+                                            app.ws[self.identifier].append(
                                                 {
                                                     "code": data["code"],
                                                     "data": await globals.websocket_handlers[
@@ -257,16 +269,16 @@ class WebSocketClient:
                                                 }
                                             )
                                         except Exception as e:
-                                            app.ws[self.token].append(
+                                            app.ws[self.identifier].append(
                                                 {"code": -1, "data": {"Error": str(e)}}
                                             )
                                 else:
-                                    print(self.token)
+                                    print(self.identifier)
 
             except Exception as e:
                 print(e)
-                if self.token is not None:
-                    app.ws.pop(self.token)
+                if self.identifier is not None:
+                    app.ws.pop(self.identifier)
                 self.error = True
                 raise
 

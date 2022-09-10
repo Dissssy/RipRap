@@ -1,8 +1,9 @@
+import asyncio
 from quart import Blueprint
 from quart import current_app as app
-from quart_schema import tag, validate_request, validate_response
-from common.primitive import Create, List, Message, Option, Session
-from common.utils import auth, benchmark
+from quart_schema import tag, validate_request, validate_response, validate_querystring
+from common.primitive import Channel, Create, List, Message, Option, Response, Session
+from common.utils import auth, benchmark, send_to_websocket
 
 bp = Blueprint("message", __name__)
 
@@ -14,13 +15,13 @@ bp = Blueprint("message", __name__)
 
 
 @bp.get("/<channel_snowflake>/")
-@tag(["Message", "Info", "Authed"])
+@tag(["Message", "Info"])
 @benchmark()
 @auth()
-@validate_request(Option.MessagesQuery)
+@validate_querystring(Option.MessagesQuery)
 @validate_response(List.Messages, 200)
 async def message_list(
-    session: Session, channel_snowflake: str, query: Option.MessagesQuery
+    session: Session, channel_snowflake: str, query_args: Option.MessagesQuery
 ) -> List.Messages:
     """Get list of up to 100 messages in a channel (optionally before a specific message)."""
     return List.Messages(
@@ -29,9 +30,9 @@ async def message_list(
                 channel=await app.db.channel_get(
                     channel_snowflake=channel_snowflake, user=session.user
                 ),
-                user=session.user,
-                limit=query.limit,
-                before=query.before,
+                # user=session.user,
+                limit=query_args.limit,
+                before=query_args.before,
             )
         )
     )
@@ -57,22 +58,34 @@ async def message_list(
 
 
 @bp.put("/<channel_snowflake>/")
-@tag(["Message", "Creation", "Authed"])
+@tag(["Message", "Create"])
 @benchmark()
 @auth()
 @validate_request(Create.Message)
 @validate_response(Message, 201)
 async def message_create(
-    session: Session, channel_snowflake: str, message: Create.Message
+    session: Session, channel_snowflake: str, data: Create.Message
 ) -> Message:
     """Create a message in a channel."""
-    return await app.db.message_set(
-        channel=await app.db.channel_get(
-            channel_snowflake=channel_snowflake, user=session.user
-        ),
-        user=session.user,
-        content=message.content,
+    channel: Channel = await app.db.channel_get(
+        channel_snowflake=channel_snowflake, user=session.user, includeserver=True
     )
+    try:
+        members = [x.snowflake for x in channel.server.members]
+    except:
+        channel: Channel = await app.db.channel_get(
+            channel_snowflake=channel_snowflake, user=session.user, includeserver=True
+        )
+        members = [x.snowflake for x in channel.server.members]
+    message = await app.db.message_set(
+        channel=channel,
+        user=session.user,
+        content=data.content,
+    )
+    asyncio.create_task(
+        send_to_websocket(members, {"code": 100, "data": message.dict()})
+    )
+    return message
 
 
 # DELETE /<server_snowflake>/<channel_snowflake>/<message_snowflake>/ (delete message if user is owner or message author)
@@ -83,25 +96,43 @@ async def message_create(
 
 
 @bp.delete("/<channel_snowflake>/<message_snowflake>/")
-@tag(["Message", "Deletion", "Authed"])
+@tag(["Message", "Delete"])
 @benchmark()
 @auth()
 async def message_delete(
     session: Session, channel_snowflake: str, message_snowflake: str
-) -> None:
+) -> Response.Success:
     """Delete a message in a channel."""
+    channel: Channel = await app.db.channel_get(
+        channel_snowflake=channel_snowflake, user=session.user, includeserver=True
+    )
+    try:
+        members = [x.snowflake for x in channel.server.members]
+    except:
+        channel: Channel = await app.db.channel_get(
+            channel_snowflake=channel_snowflake, user=session.user, includeserver=True
+        )
+        members = [x.snowflake for x in channel.server.members]
     await app.db.message_set(
-        channel=await app.db.channel_get(
-            channel_snowflake=channel_snowflake, user=session.user
-        ),
+        channel=channel,
         snowflake=message_snowflake,
         user=session.user,
         delete=True,
     )
+    asyncio.create_task(
+        send_to_websocket(
+            members,
+            {
+                "code": 300,
+                "data": {"snowflake": message_snowflake, "channel": channel.dict()},
+            },
+        )
+    )
+    return Response.Success(response="Message deleted")
 
 
 @bp.patch("/<channel_snowflake>/<message_snowflake>/")
-@tag(["Message", "Updating", "Authed"])
+@tag(["Message", "Update"])
 @benchmark()
 @auth()
 @validate_request(Create.Message)
@@ -110,14 +141,27 @@ async def message_update(
     session: Session,
     channel_snowflake: str,
     message_snowflake: str,
-    message: Create.Message,
+    data: Create.Message,
 ) -> Message:
     """Update a message in a channel."""
-    return await app.db.message_set(
-        channel=await app.db.channel_get(
-            channel_snowflake=channel_snowflake, user=session.user
-        ),
+    channel: Channel = await app.db.channel_get(
+        channel_snowflake=channel_snowflake, user=session.user, includeserver=True
+    )
+    try:
+        members = [x.snowflake for x in channel.server.members]
+    except:
+        channel: Channel = await app.db.channel_get(
+            channel_snowflake=channel_snowflake, user=session.user, includeserver=True
+        )
+        members = [x.snowflake for x in channel.server.members]
+    message = await app.db.message_set(
+        channel=channel,
         snowflake=message_snowflake,
         user=session.user,
-        content=message.content,
+        content=data.content,
     )
+
+    asyncio.create_task(
+        send_to_websocket(members, {"code": 200, "data": message.dict()})
+    )
+    return message

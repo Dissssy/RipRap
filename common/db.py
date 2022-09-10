@@ -12,7 +12,7 @@ from uuid import uuid1
 import zlib
 import bcrypt
 from databases import Database
-from common.primitive import Channel, Message, Server, Session, User, Error
+from common.primitive import Channel, Invite, Message, Server, Session, User, Error
 from snowflake import SnowflakeGenerator
 import prisma
 from prisma.models import (
@@ -266,6 +266,8 @@ class RIPRAPDatabase:
     async def session_get(
         self, *, token: str, listall: bool = False
     ) -> Session | list[Session]:
+        if token is None:
+            raise Error("Token is required", 400)
         session = await self._db.session.find_unique(
             where={"token": token},
             include={
@@ -372,11 +374,13 @@ class RIPRAPDatabase:
 
     async def server_get(self, *, snowflake: int | str, user: User) -> Server:
         snowflake = int(snowflake)
+        where = {
+            "snowflake": snowflake,
+        }
+        if user is not None:
+            where["members"] = {"some": {"userSnowflake": user.snowflake}}
         server = await self._db.server.find_many(
-            where={
-                "snowflake": snowflake,
-                "members": {"some": {"userSnowflake": user.snowflake}},
-            },
+            where=where,
             include={
                 "owner": True,
                 "members": {
@@ -469,18 +473,26 @@ class RIPRAPDatabase:
                 nocache=True,
             )
 
-    async def channel_get(self, *, channel_snowflake: int | str, user: User) -> Channel:
+    async def channel_get(
+        self, *, channel_snowflake: int | str, user: User, includeserver: bool = False
+    ) -> Channel:
         # get channel where snowflake = channel_snowflake and user is in channel members
         channel_snowflake = int(channel_snowflake)
         user_snowflake = int(user.snowflake)
+        include = {
+            "messages": True,
+        }
+
+        if includeserver:
+            include["server"] = {
+                "include": {"members": {"include": {"user": True}}, "owner": True}
+            }
         channel = await self._db.channel.find_many(
             where={
                 "snowflake": channel_snowflake,
                 "server": {"members": {"some": {"userSnowflake": user_snowflake}}},
             },
-            include={
-                "messages": True,
-            },
+            include=include,
         )
         if len(channel) == 0:
             raise Error("Channel not found", 404)
@@ -599,12 +611,15 @@ class RIPRAPDatabase:
         limit: int = 10,
         before: Optional[int | str] = None,
     ) -> list[Message]:
+        where = {
+            "channel": {
+                "snowflake": int(channel.snowflake),
+            },
+        }
+        if before is not None:
+            where["snowflake"] = {"lt": int(before)}
         messages = await self._db.message.find_many(
-            where={
-                "channel": {
-                    "snowflake": int(channel.snowflake),
-                },
-            }.update({} if before is None else {"snowflake": {"lt": int(before)}}),
+            where=where,
             order={"snowflake": "desc"},
             take=limit,
             include={
@@ -721,6 +736,79 @@ class RIPRAPDatabase:
                 where={"snowflake": int(server.snowflake)},
                 data={"members": {"connect": {"snowflake": int(member)}}},
             )
+
+    async def invite_set(
+        self,
+        *,
+        server: Server,
+        user: User,
+        invite: Optional[str] = None,
+    ) -> Optional[Invite]:
+        if invite is not None:
+            thisinvite = await self._db.serverinvites.find_unique(
+                where={
+                    "invite": invite,
+                },
+                include={
+                    "server": True,
+                },
+            )
+            if thisinvite is None:
+                raise Error("Invite not found", 404)
+            if thisinvite.server.owner.snowflake != user.snowflake:
+                raise Error("You are not the owner of this server", 401)
+            await self._db.serverinvites.delete(where={"snowflake": invite})
+            return None
+        else:
+            return Invite.from_prisma(
+                await self._db.serverinvites.create(
+                    data={
+                        "invite": hashlib.sha1(
+                            codecs.encode(str(next(self.snowflake_gen)), "ascii")
+                        ).hexdigest(),
+                        "server": {"connect": {"snowflake": int(server.snowflake)}},
+                    },
+                    include={
+                        "server": {
+                            "include": {
+                                "owner": True,
+                            }
+                        },
+                    },
+                )
+            )
+
+    async def invite_get(self, *, invite: str) -> Invite:
+        thisinvite = await self._db.serverinvites.find_unique(
+            where={
+                "invite": invite,
+            },
+            include={
+                "server": {
+                    "include": {
+                        "owner": True,
+                    }
+                },
+            },
+        )
+        if thisinvite is None:
+            raise Error("Invite not found", 404)
+        return Invite.from_prisma(thisinvite)
+
+    async def join_server(self, *, server: Server, user: User, invite: Invite):
+        members = [x.snowflake for x in server.members]
+        for member in members:
+            if member == user.snowflake:
+                raise Error("You are already in this server", 400)
+
+        await self._db.serverusersrelation.create(
+            data={
+                "server": {"connect": {"snowflake": server.snowflake}},
+                "user": {"connect": {"snowflake": user.snowflake}},
+            }
+        )
+        await self._db.serverinvites.delete(where={"invite": invite.invite})
+        return server
 
     # async def ratelimited_get(
     #     self, endpoint_id: str, session: Primitive.Session, t: int, maxuses: int

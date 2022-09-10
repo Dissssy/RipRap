@@ -1,7 +1,7 @@
 import base64
 from prisma import Prisma, Base64, models
 from pydantic import BaseModel
-from typing import Optional
+from typing import Any, Optional
 
 from common.utils import sync_cache
 
@@ -37,6 +37,7 @@ class Channel(BaseModel):
     picture: Optional[str]
     snowflake: str
     message_count: int
+    server: Any
 
     # @classmethod
     # def __str__(self) -> str:
@@ -56,6 +57,9 @@ class Channel(BaseModel):
             picture=b64tostr(channel.picture),
             snowflake=str(channel.snowflake),
             message_count=message_count,
+            server=Server.from_prisma(channel.server, level=2)
+            if channel.server is not None
+            else None,
         )
         return channel
 
@@ -108,7 +112,7 @@ class User(BaseModel):
 class Message(BaseModel):
     content: str
     snowflake: str
-    channel: Channel
+    channel: Optional[Channel]
     author: User
 
     # @classmethod
@@ -118,7 +122,7 @@ class Message(BaseModel):
 
     @staticmethod
     @sync_cache()
-    def from_prisma(message: models.Message):
+    def from_prisma(message: models.Message, level: int = 0):
         return Message(
             content=message.content,
             snowflake=str(message.snowflake),
@@ -136,7 +140,7 @@ class Server(BaseModel):
     picture: Optional[str]
     owner: User
     snowflake: str
-    channels: list[Channel]
+    channels: Optional[list[Channel]]
     members: list[User]
     invites: list[str]
 
@@ -157,7 +161,9 @@ class Server(BaseModel):
             channels=[
                 Channel.from_prisma(x or raise_inline("NO CHANNEL IN SERVER SET"), 1)
                 for x in server.channels or []
-            ],
+            ]
+            if level < 2
+            else None,
             members=[
                 User.from_prisma(x.user or raise_inline("NO MEMBERS IN SERVER SET"), 1)
                 for x in server.members or []
@@ -185,6 +191,25 @@ class Session(BaseModel):
                 session.user or raise_inline("NO USER IN SESSION SET")
             ),
         )
+
+
+class Invite(BaseModel):
+    invite: str
+    server: Server
+
+    @staticmethod
+    @sync_cache()
+    def from_prisma(invite: models.ServerInvites):
+        return Invite(
+            invite=invite.invite,
+            server=Server.from_prisma(
+                invite.server or raise_inline("NO SERVER IN INVITE SET"), level=2
+            ),
+        )
+
+
+class Join(BaseModel):
+    invite: str
 
 
 # class Error:
@@ -250,7 +275,7 @@ class Option:
 class Create:
     class Channel(BaseModel):
         name: str
-        picture: Optional[bytes]
+        # picture: Optional[bytes]
 
     class Message(BaseModel):
         content: str
@@ -291,8 +316,9 @@ class Update:
     class User(BaseModel):
         name: Optional[str]
         picture: Optional[str]
-        password: Optional[str]
-        email: Optional[str]
+        oldpassword: Optional[str]
+        newpassword: Optional[str]
+        # email: Optional[str]
 
     class Password(BaseModel):
         password: str

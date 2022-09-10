@@ -2,10 +2,10 @@ import codecs
 from typing import cast
 import zlib
 import bcrypt
-from quart import Blueprint
+from quart import Blueprint, render_template
 from quart import current_app as app
 from quart_schema import tag, validate_request, validate_response
-from common.primitive import Create, List, Response, Server, Session
+from common.primitive import Create, Invite, Join, List, Response, Server, Session
 from common.utils import auth, benchmark, validate_string, websocket
 
 bp = Blueprint("server", __name__)
@@ -17,7 +17,7 @@ bp = Blueprint("server", __name__)
 
 
 @bp.get("/")
-@tag(["Server", "Info", "Authed"])
+@tag(["Server", "Info"])
 @benchmark()
 @auth()
 @validate_response(List.Servers, 200)
@@ -38,7 +38,7 @@ async def server_list(session: Session) -> List.Servers:
 
 
 @bp.get("/<server_snowflake>/")
-@tag(["Server", "Info", "Authed"])
+@tag(["Server", "Info"])
 @benchmark()
 @auth()
 @validate_response(Server, 200)
@@ -55,7 +55,7 @@ async def server_info(session: Session, server_snowflake: str) -> Server:
 
 
 @bp.put("/")
-@tag(["Server", "Creation", "Authed"])
+@tag(["Server", "Create"])
 @benchmark()
 @auth()
 @validate_request(Create.Server)
@@ -76,7 +76,7 @@ async def server_create(session: Session, data: Create.Server) -> Server:
 
 
 @bp.delete("/<server_snowflake>/")
-@tag(["Server", "Deletion", "Authed"])
+@tag(["Server", "Delete"])
 @benchmark()
 @auth()
 # @websocket(303, {"server_snowflake": str})
@@ -94,8 +94,8 @@ async def server_delete(session: Session, server_snowflake: str) -> Response.Suc
 #     500 Internal Server Error
 
 
-@bp.delete("/<server_snowflake>/members/<user_snowflake>")
-@tag(["Server", "User", "Deletion", "Authed"])
+@bp.delete("/<server_snowflake>/members/<user_snowflake>/")
+@tag(["Server", "Delete"])
 @benchmark()
 @auth()
 @validate_response(Response.Success, 204)
@@ -173,3 +173,65 @@ async def server_user_delete(
 #         raise Primitive.Error("You are not the owner of this server", 403)
 #     await app.db.server_remove(await app.db.snowflake_get(server_snowflake))
 #     return Primitive.Response.Success(response="Server deleted"), 200
+
+
+@bp.get("/<server_snowflake>/card")
+@tag(["Card"])
+@benchmark()
+@auth()
+async def auth_image(session: Session, server_snowflake: str):
+    """Get server card html."""
+    server: Server = await app.db.server_get(
+        snowflake=server_snowflake, user=session.user
+    )
+    return await render_template(
+        "/servercard.html",
+        image=server.picture,
+        snowflake=server.snowflake,
+        name=server.name,
+        owner_name=server.owner.name,
+        members=len(server.members),
+    )
+
+
+@bp.get("/<server_snowflake>/channels")
+@tag(["Channel", "Info"])
+@benchmark()
+@auth()
+@validate_response(List.Channels, 200)
+async def channel_list(session: Session, server_snowflake: str) -> List.Channels:
+    """Get list of all channels in a server."""
+    return List.Channels(
+        channels=(
+            await app.db.server_get(snowflake=server_snowflake, user=session.user)
+        ).channels
+    )
+
+
+@bp.put("/<server_snowflake>/invite")
+@tag(["Invite", "Creation"])
+@benchmark()
+@auth()
+@validate_response(Invite, 200)
+async def invite_create(session: Session, server_snowflake: str) -> Invite:
+    """Create invite."""
+    return await app.db.invite_set(
+        server=await app.db.server_get(snowflake=server_snowflake, user=session.user),
+        user=session.user,
+    )
+
+
+@bp.patch("/join")
+@tag(["Server", "Join"])
+@benchmark()
+@auth()
+@validate_request(Join)
+@validate_response(Server, 200)
+async def server_join(session: Session, data: Join) -> Server:
+    """Join server with an invite code."""
+    invite: Invite = await app.db.invite_get(invite=data.invite)
+    return await app.db.join_server(
+        server=await app.db.server_get(snowflake=invite.server.snowflake, user=None),
+        user=session.user,
+        invite=invite,
+    )

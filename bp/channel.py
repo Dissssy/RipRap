@@ -25,18 +25,18 @@ bp = Blueprint("channel", __name__)
 #     500 Internal Server Error
 
 
-@bp.get("/<server_snowflake>/")
-@tag(["Channel", "Info", "Authed"])
-@benchmark()
-@auth()
-@validate_response(List.Channels, 200)
-async def channel_list(session: Session, server_snowflake: str) -> List.Channels:
-    """Get list of all channels in a server."""
-    return List.Channels(
-        channels=(
-            await app.db.server_get(snowflake=server_snowflake, user=session.user)
-        ).channels
-    )
+# @bp.get("/<server_snowflake>")
+# @tag(["Channel", "Info"])
+# @benchmark()
+# @auth()
+# @validate_response(List.Channels, 200)
+# async def channel_list(session: Session, server_snowflake: str) -> List.Channels:
+#     """Get list of all channels in a server."""
+#     return List.Channels(
+#         channels=(
+#             await app.db.server_get(snowflake=server_snowflake, user=session.user)
+#         ).channels
+#     )
 
 
 # GET /<server_snowflake>/<channel_snowflake>/ (channel info if channel exists and user is in server)
@@ -47,7 +47,7 @@ async def channel_list(session: Session, server_snowflake: str) -> List.Channels
 
 
 @bp.get("/<channel_snowflake>/")
-@tag(["Channel", "Info", "Authed"])
+@tag(["Channel", "Info"])
 @benchmark()
 @auth()
 @validate_response(Channel, 200)
@@ -68,7 +68,7 @@ async def channel_info(session: Session, channel_snowflake: str) -> Channel:
 
 
 @bp.put("/<server_snowflake>/")
-@tag(["Channel", "Creation", "Authed"])
+@tag(["Channel", "Create"])
 @benchmark()
 @auth()
 @validate_request(Create.Channel)
@@ -81,7 +81,6 @@ async def channel_create(
         user=session.user,
         server=await app.db.server_get(snowflake=server_snowflake, user=session.user),
         name=data.name,
-        picture=data.picture,
     )
 
 
@@ -94,7 +93,7 @@ async def channel_create(
 
 
 @bp.delete("/<server_snowflake>/<channel_snowflake>/")
-@tag(["Channel", "Deletion", "Authed"])
+@tag(["Channel", "Delete"])
 @benchmark()
 @auth()
 @validate_response(Response.Success, 200)

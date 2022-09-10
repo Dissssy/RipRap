@@ -10,7 +10,7 @@ from quart_schema import (
 )
 
 
-from common.primitive import User, Session, Response
+from common.primitive import Update, User, Session, Response
 from common.utils import auth, benchmark, validate_snowflake
 
 bp = Blueprint("user", __name__)
@@ -22,7 +22,7 @@ bp = Blueprint("user", __name__)
 
 
 @bp.get("/")
-@tag(["User", "Info", "Authed", "Self"])
+@tag(["User", "Info", "Self"])
 @benchmark()
 @auth()
 @validate_response(User, 200)
@@ -39,7 +39,7 @@ async def user_info_self(session: Session) -> User:
 
 
 @bp.get("/<user_snowflake>/")
-@tag(["User", "Info", "Authed"])
+@tag(["User", "Info"])
 @benchmark()
 @auth()
 @validate_response(User, 200)
@@ -82,8 +82,8 @@ async def user_info_other(session: Session, user_snowflake: str) -> User:
 #     500 Internal Server Error
 
 
-@bp.get("/usercard")
-@tag(["Auth", "Helper"])
+@bp.get("/card/")
+@tag(["Card"])
 @benchmark()
 @auth()
 async def auth_image(session: Session):
@@ -99,52 +99,26 @@ async def auth_image(session: Session):
     )
 
 
-# @bp.get("/")
-# @tag(["User", "Info"])
-# @validate_response(Primitive.User, 200)
-# @auth()
-# async def get_self(session: Primitive.Session) -> Primitive.User:
-#     """Get information about the current user."""
-#     return session.user
+# PATCH / (update user info)
+#     200 OK - Returns nothing
+#     401 Unauthorized - Token invalid
+#     500 Internal Server Error
 
 
-# @bp.patch("/")
-# @tag(["User", "Update"])
-# @auth()
-# @validate_request(Primitive.Update.User)
-# @validate_response(Primitive.User, 200)
-# async def update_self(session: Primitive.Session, update: Primitive.Update.User) -> Primitive.User:
-#     """Update the current user."""
-#     return await app.db.user_set(session.snowflake, nickname=update.nickname, picture=update.picture)
+@bp.patch("/")
+@tag(["User", "Update", "Self"])
+@benchmark()
+@auth()
+@validate_request(Update.User)
+@validate_response(Response.Success, 200)
+async def user_update_self(session: Session, data: Update.User) -> Response.Success:
+    """Update user info."""
+    await app.db.user_set(
+        snowflake=session.user.snowflake,
+        password=data.oldpassword,
+        name=data.name,
+        picture=data.picture,
+    )
+    # get all members of all servers user is in, get all of their tokens, and post a websocket event to all tokens
 
-# @bp.get("/<user_snowflake>")
-# @tag(["User", "Info"])
-# @auth()
-# @validate_response(Primitive.User, 200)
-# async def get_user(session: Primitive.Session, user_snowflake: str) -> Primitive.User:
-#     """Get information about a user."""
-#     return await app.db.user_get(await app.db.snowflake_get(user_snowflake))
-
-# @bp.put("/<user_snowflake>/add")
-# @tag(["User"])
-# @validate_headers(User.Headers)
-# @validate_response(User.Added, 200)
-# @validate_response(User.Requested, 200)
-# @validate_response(User.Unauthorized, 401)
-# @validate_response(User.Error, 400)
-# async def put_friend(user_snowflake: str, headers: User.Headers):
-#     snowflake = await _get_snowflake_from_token(app.db, headers.x_token)
-#     if snowflake is not None:
-#         if validate_snowflake(user_snowflake):
-#             if _is_user(user_snowflake):
-#                 user = await _add_friend(app.db, snowflake, user_snowflake)
-#                 if user:
-#                     return User.Added(f"Successfully added {user_snowflake}")
-#                 else:
-#                     return User.Requested(f"Successfully requested {user_snowflake}")
-#             else:
-#                 return User.Error("User does not exist"), 400
-#         else:
-#             return User.Error("Invalid snowflake"), 400
-#     else:
-#         return User.Unauthorized("Token is invalid"), 401
+    return Response.Success(response="Successfully updated user.")

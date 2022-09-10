@@ -1,7 +1,3 @@
-# goodchars = (
-#     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ,.<>[]1234567890-=!@#$%^&*()_+"
-# )
-
 import globals
 
 import asyncio
@@ -14,6 +10,7 @@ from time import time as now
 from typing import Callable, Optional
 import quart
 from colorama import Fore
+from quart_schema import tag
 
 import quart_schema
 
@@ -23,9 +20,9 @@ from quart import current_app as app
 print(Fore.WHITE)
 
 
-def validate_string(string: str, /, *, minlength=8, maxlength=48):
-    if string == "string":
-        return
+def validate_string(string: str, field: str, /, *, minlength=8, maxlength=48):
+    # if string == "string":
+    #     return
     # r = re.search(r"(?![A-Za-z0-9._=!@#$%^&*()+-])", string, re.RegexFlag.I)
     # r = None
     # for char in string:
@@ -36,11 +33,11 @@ def validate_string(string: str, /, *, minlength=8, maxlength=48):
     #     return f"{string} contains invalid characters ({r})! Can only be comprised of these characters: {goodchars}"
     if len(string) < minlength:
         raise Primitive.Error(
-            f"{string} too short! Should be at least {minlength} characters!", 400
+            f"{field} too short! Should be at least {minlength} characters!", 400
         )
     if len(string) > maxlength:
         raise Primitive.Error(
-            f"{string} too long! Should be at most {maxlength} characters!", 400
+            f"{field} too long! Should be at most {maxlength} characters!", 400
         )
 
 
@@ -67,6 +64,7 @@ def twofellas(snowflakeone: str, snowflaketwo: str) -> str:
 
 def auth(keep_token=False):
     def decorator(func):
+        @tag(["Authed"])
         @quart_schema.validate_headers(Primitive.Header.Token)
         @wraps(func)
         async def wrapper(*args, **kwargs):
@@ -269,6 +267,14 @@ async def get_updated_sync_cache(func, cachehash, time, args, kwargs):
     if app.cache.get(func.__name__) is None:
         app.cache[func.__name__] = {}
     app.cache[func.__name__][cachehash] = [func(*args, **kwargs), now() + time]
+
+
+async def send_to_websocket(users: list[str], data: dict):
+    for member in users:
+        for ws in app.ws.keys():
+            if member == ws.split(":")[0]:
+                # print("Sending message to ", ws)
+                app.ws[ws].append(data)
 
 
 def benchmark():

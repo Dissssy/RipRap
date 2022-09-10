@@ -30,18 +30,20 @@ bp = Blueprint("auth", __name__)
 #     500 Internal Server Error
 
 
-@bp.put("/register")
-@tag(["Auth", "Creation", "User"])
+@bp.put("/register/")
+@tag(["Auth", "Create", "User"])
 @benchmark()
 @validate_request(Create.User)
 @validate_response(User, 201)
 async def auth_register(data: Create.User) -> User:
     """Register a new user."""
-    validate_string(data.username, minlength=1, maxlength=32)
-    validate_string(data.password, minlength=8, maxlength=64)
+    email = data.email.lower()
+    app.db._verify_email(email)
+    validate_string(data.username, "Username", minlength=1, maxlength=32)
+    validate_string(data.password, "Password", minlength=8, maxlength=64)
 
     user = await app.db.user_set(
-        name=data.username, password=data.password, email=data.email
+        name=data.username, password=data.password, email=email
     )
     return user
 
@@ -53,21 +55,22 @@ async def auth_register(data: Create.User) -> User:
 #     500 Internal Server Error
 
 
-@bp.put("/session")
-@tag(["Auth", "Creation", "Session"])
+@bp.put("/session/")
+@tag(["Auth", "Create", "Session"])
 @benchmark()
 @validate_request(Create.Session)
 @validate_response(Session, 201)
 async def auth_session(data: Create.Session) -> Session:
     """Create a new session for a user."""
-    validate_string(data.session_name, minlength=1, maxlength=128)
-    validate_string(data.password, minlength=8, maxlength=64)
-    app.db._verify_email(data.email)
+    email = data.email.lower()
+    app.db._verify_email(email)
+    validate_string(data.session_name, "Session name", minlength=1, maxlength=128)
+    validate_string(data.password, "Password", minlength=8, maxlength=64)
 
     session = await app.db.session_set(
         session_name=data.session_name,
         password=data.password,
-        email=data.email,
+        email=email,
     )
     return session
 
@@ -78,8 +81,8 @@ async def auth_session(data: Create.Session) -> Session:
 #     500 Internal Server Error
 
 
-@bp.delete("/session")
-@tag(["Auth", "Deletion", "Session", "Authed"])
+@bp.delete("/session/")
+@tag(["Auth", "Delete", "Session"])
 @benchmark()
 @auth()
 @validate_response(Response.Success, 200)
@@ -95,8 +98,8 @@ async def auth_session_delete(session: Session) -> Response.Success:
 #     500 Internal Server Error
 
 
-@bp.get("/session")
-@tag(["Auth", "Info", "Session", "Authed"])
+@bp.get("/session/")
+@tag(["Auth", "Info", "Session"])
 @benchmark()
 @auth()
 @validate_response(List.Sessions, 200)
